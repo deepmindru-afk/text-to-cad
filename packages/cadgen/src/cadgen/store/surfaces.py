@@ -179,15 +179,74 @@ def lookup(entry: dict, producer: dict) -> dict | None:
     return actual
 
 
+def normalize_tessellations(value: Any) -> list[tuple[float, float]]:
+    """``[{chordTolerance, angleTolerance}, ...]`` as sorted, distinct (chord, angle) pairs."""
+    from cadgen.store.meshes import tessellation_quality
+
+    if value is None:
+        return []
+    if type(value) not in (list, tuple):
+        raise ValueError("tessellations must be a list of {chordTolerance, angleTolerance}")
+    pairs = set()
+    for item in value:
+        if type(item) is not dict or set(item) != {"chordTolerance", "angleTolerance"}:
+            raise ValueError("a tessellation is exactly {chordTolerance, angleTolerance}")
+        chord, angle = item["chordTolerance"], item["angleTolerance"]
+        tessellation_quality(chord, angle)  # positive finite binary64 values, or ValueError
+        pairs.add((float(chord), float(angle)))
+    return sorted(pairs)
+
+
+def mesh_records(entry: dict, producer: dict, tessellations) -> dict[str, dict | None]:
+    """The stored mesh index record of each tessellation of one component, None where absent."""
+    from cadgen.store import meshes
+
+    surface_key = surface_input(entry, producer)
+    return {key: meshes.probe(key) for key in
+            (meshes.tessellation_key(surface_key, chord, angle) for chord, angle in normalize_tessellations(tessellations))}
+
+
+def _derive_meshes(entry: dict, surface: dict, producer: dict, tessellations: list[tuple[float, float]],
+                   keep_going: Callable[[], bool] | None) -> bool:
+    """Mesh one component at each missing tessellation; False when told to stop."""
+    from cadgen._internal.component_package import decode_display_shape
+    from cadgen._internal.occt_mesh import mesh_component
+    from cadgen._internal.surface_extract import read_surf
+    from cadgen.store import meshes
+
+    surface_key = surface["surfaceInput"]
+    missing = [(chord, angle) for chord, angle in tessellations
+               if meshes.probe(meshes.tessellation_key(surface_key, chord, angle)) is None]
+    if not missing:
+        return True
+    index, _floats = read_surf(read_verified_object(surface["object"]))
+    payload = read_verified_object(entry["brep"])
+    for chord, angle in missing:
+        if keep_going is not None and not keep_going():
+            return False
+        # Meshing stores its triangulation on the shape: each tessellation meshes
+        # a fresh private decode, so no level depends on another having run.
+        shape = decode_display_shape(entry, payload)
+        body = mesh_component(getattr(shape, "wrapped", shape), index, surface_input=surface_key,
+                              surface_object=surface["object"], chord=chord, angle=angle)
+        meshes.write(meshes.tessellation_key(surface_key, chord, angle), body)
+    return True
+
+
 def derive(tree_hash: str, cids: list[str] | None = None, *, force: bool = False,
            expected_objects: dict[str, str] | None = None, producer: dict | None = None,
-           keep_going: Callable[[], bool] | None = None) -> dict:
+           keep_going: Callable[[], bool] | None = None, tessellations: Any = None) -> dict:
     """Derive the surfaces of ``cids`` (every component when None) and return their records.
 
-    ``keep_going``, when given, is asked before each extraction: False stops there, and the
-    result holds the components done so far (a daemon worker asks whether anyone still
-    wants its job, ``daemon/worker.py``).
+    ``tessellations`` (``[{chordTolerance, angleTolerance}, ...]``) also meshes each
+    component at every tolerance it is missing, into the store's mesh entries
+    (``cadgen.store.meshes``): what the CAD Viewer, snapshots and mesh exports draw.
+
+    ``keep_going``, when given, is asked before each extraction and each mesh: False stops
+    there, and the result holds the components done so far (a daemon worker asks whether
+    anyone still wants its job, ``daemon/worker.py``).
     """
+    tessellations = normalize_tessellations(tessellations)
     from cadgen.store.trees import capture_tree as capture
     from cadgen._internal.component_package import decode_geometry_component
     from cadgen._internal.surface_extract import extract_surface_component
@@ -236,6 +295,8 @@ def derive(tree_hash: str, cids: list[str] | None = None, *, force: bool = False
         # A hit is a read and writes nothing (STORE.md §8).
         if actual != prior:
             write_entry("surface", expected["surfaceInput"], actual)
+        if tessellations and not _derive_meshes(entry, actual, producer, tessellations, keep_going):
+            break
         result[cid] = actual
     return result
 

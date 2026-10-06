@@ -62,7 +62,7 @@ def normalize_request(request):
     kind = request.get("kind")
     if kind == "producer" and set(request) == {"kind"}:
         return {"kind": "producer"}
-    fields = {"kind", "tree", "cids", "producer", "expected_objects", "force"}
+    fields = {"kind", "tree", "cids", "producer", "expected_objects", "force", "tessellations"}
     required = {"kind", "tree", "cids", "producer"}
     if kind != "surfaces" or not required <= set(request) or set(request) - fields:
         raise ValueError("artifact request must be producer or surfaces with closed immutable inputs")
@@ -79,8 +79,13 @@ def normalize_request(request):
     force = request.get("force", False)
     if type(force) is not bool:
         raise ValueError("artifact force must be a boolean")
+    from cadgen.store.surfaces import normalize_tessellations
+
+    tessellations = [{"chordTolerance": chord, "angleTolerance": angle}
+                     for chord, angle in normalize_tessellations(request.get("tessellations"))]
     return {"kind": kind, "tree": _digest(request["tree"], "tree"), "cids": sorted(cids),
-            "producer": _producer(request["producer"]), "expected_objects": dict(sorted(expected.items())), "force": force}
+            "producer": _producer(request["producer"]), "expected_objects": dict(sorted(expected.items())), "force": force,
+            "tessellations": tessellations}
 
 
 def request_key(request):
@@ -142,7 +147,7 @@ def execute(request, *, keep_going=None):
         return surfaces.producer_identity()
     return surfaces.derive(request["tree"], request["cids"], producer=request["producer"],
                            expected_objects=request["expected_objects"], force=request["force"],
-                           keep_going=keep_going)
+                           keep_going=keep_going, tessellations=request["tessellations"])
 
 
 class ArtifactFuture(Future):

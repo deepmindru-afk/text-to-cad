@@ -885,6 +885,26 @@ def decode_geometry_component(entry: dict[str, Any], payload: bytes) -> Any:
     return shape
 
 
+def decode_display_shape(entry: dict[str, Any], payload: bytes) -> Any:
+    """A private shape to mesh for display (``cadgen._internal.occt_mesh``).
+
+    A native component is :func:`decode_geometry_component`. An eager-only
+    component's bytes failed the exact round-trip fence, so they never stand in
+    for its geometry -- but they decode, with the same topology and ordinals as
+    the eager surface taken from the live shape, and a display mesh tolerates
+    the known point-parameter loss the fence exists for.
+    """
+    if entry["kind"] != "eager-only":
+        return decode_geometry_component(entry, payload)
+    validate_geometry_component(entry, payload)
+    try:
+        return _decode_brep(entry["codec"], payload)
+    except MemoryError:
+        raise
+    except Exception as exc:
+        raise ValueError(f"unreadable {entry['codec']} geometry payload") from exc
+
+
 def validate_geometry_component(entry: Any, payload: bytes, *, cid: str | None = None) -> None:
     """Kernel-free verification of a complete encoded geometry input."""
     if type(entry) is not dict or entry.get("kind") not in COMPONENT_KINDS or entry.get("codec") not in GEOMETRY_CODECS:

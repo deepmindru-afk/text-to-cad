@@ -1,10 +1,14 @@
 """Validated tessellation entries: immutable TESS objects, input-keyed indexes.
 
-This is the kernel-free Python half of the shared TESS v4 contract. A probe
-reads only the small index and the object's observed size. Body reads remain
-bound to that exact object and an admitted byte limit; they verify both the
-content address and the payload's complete input identity before returning.
-SURF hashes are provenance here, not additional required objects or GC roots.
+The kernel-free half of the TESS v5 contract: the format, its validation and
+its encoder. cadgen is the only producer -- OCCT's mesher, run on a component's
+exact BREP (``cadgen/_internal/occt_mesh.py``) -- and every consumer only reads:
+the CAD Viewer, snapshots and mesh exports draw the same stored triangles. A
+probe reads only the small index and the object's observed size. Body reads
+remain bound to that exact object and an admitted byte limit; they verify both
+the content address and the payload's complete input identity before
+returning. SURF hashes are provenance here, not additional required objects or
+GC roots.
 """
 
 from __future__ import annotations
@@ -20,8 +24,9 @@ from typing import Any
 from cadgen.store.index import entry_path, write_entry
 from cadgen.store.objects import object_path, put_object
 
-TESS_VERSION = 4
-TESSELLATOR_VERSION = 9
+TESS_VERSION = 5
+# 10: OCCT BRepMesh on the exact BREP replaced the JavaScript surface tessellator.
+TESSELLATOR_VERSION = 10
 MESH_INDEX_SCHEMA = 1
 MAX_INDEX_BYTES = 16 * 1024
 MAX_HEADER_BYTES = 4 * 1024 * 1024
@@ -33,7 +38,7 @@ _KEY = re.compile(
     rf"-l([0-9a-f]{{16}})-a([0-9a-f]{{16}})"
 )
 _QUALITY_FIELDS = {"chordTolerance", "chordToleranceF64", "angleTolerance", "angleToleranceF64"}
-_COUNT_FIELDS = ("positionCount", "normalCount", "faceOrdCount", "indexCount", "sideOrdCount")
+_COUNT_FIELDS = ("positionCount", "normalCount", "faceOrdCount", "indexCount")
 _SIZE_FIELDS = {"headerBytes", "arrayBytes", "faceRangeCount", "edgeCount", "edgeClassCount", "edgeSegmentCount"}
 _EDGE_CLASSES = {"none", "feature", "tangent", "seam", "degenerate", "boundary", "nonManifold", "unknown"}
 _RECORD_FIELDS = {
@@ -171,7 +176,7 @@ def _decoded_bytes(sizes: dict) -> int:
 
 
 def payload_record(key: str, payload: bytes) -> dict:
-    """Validate a complete v4 body and return its canonical index facts."""
+    """Validate a complete v5 body and return its canonical index facts."""
     if not valid_key(key) or len(payload) < 12:
         raise ValueError("invalid tessellation input or payload")
     magic, version, header_size = struct.unpack_from("<III", payload)
@@ -201,7 +206,7 @@ def payload_record(key: str, payload: bytes) -> dict:
         raise ValueError("invalid tessellation array counts")
     if (header["positionCount"] % 3 or header["normalCount"] != header["positionCount"]
             or header["faceOrdCount"] * 3 != header["positionCount"] or header["indexCount"] % 3
-            or header["sideOrdCount"] != header["indexCount"] or any(edge["count"] % 3 for edge in edges)):
+            or any(edge["count"] % 3 for edge in edges)):
         raise ValueError("invalid tessellation vertex, triangle or edge grouping")
     _validate_render_metadata(header)
     array_bytes = sum(counts) * 4
@@ -223,6 +228,41 @@ def payload_record(key: str, payload: bytes) -> dict:
     if not _valid_record(key, record):
         raise ValueError("invalid tessellation index facts")
     return record
+
+
+def encode_payload(*, surface_input: str, surface_object: str, chord: float, angle: float,
+                   positions: bytes, normals: bytes, face_ords: bytes, indices: bytes,
+                   face_ranges: list[dict], edges: list[tuple[int, str | None, bytes]],
+                   edge_classes: list[list], bounds: dict, scale: float,
+                   part_color: list | None = None) -> bytes:
+    """One component's TESS v5 body.
+
+    The arrays arrive as little-endian bytes: ``positions``, ``normals`` and
+    ``face_ords`` float32 (``face_ords`` one per vertex), ``indices`` uint32, and
+    each edge's polyline float32 xyz. The header names what produced them and
+    every count a reader checks, padded with spaces so the arrays start 4-byte
+    aligned; the result is validated before it is returned.
+    """
+    quality = tessellation_quality(chord, angle)
+    key = tessellation_key(surface_input, chord, angle)
+    header = {
+        "tessellationInput": key, "surfaceInput": surface_input, "surfaceDigest": surface_object,
+        "quality": quality, "tessellatorVersion": TESSELLATOR_VERSION, "payloadVersion": TESS_VERSION,
+        "partColor": part_color, "edgeClasses": edge_classes, "faceRanges": face_ranges,
+        "bounds": bounds, "scale": scale,
+        "positionCount": len(positions) // 4, "normalCount": len(normals) // 4,
+        "faceOrdCount": len(face_ords) // 4, "indexCount": len(indices) // 4,
+        "edges": [{"ord": ordinal, "visibilityClass": visibility, "count": len(polyline) // 4}
+                  for ordinal, visibility, polyline in edges],
+    }
+    text = json.dumps(header, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    text += b" " * (-len(text) % 4)
+    payload = b"".join([
+        struct.pack("<III", 0x53534554, TESS_VERSION, len(text)), text,
+        positions, normals, face_ords, indices, *(polyline for _, _, polyline in edges),
+    ])
+    payload_record(key, payload)
+    return payload
 
 
 def _valid_record(key: str, record: Any) -> bool:

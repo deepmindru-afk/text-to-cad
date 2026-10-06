@@ -34,8 +34,8 @@ const COARSE_POINTER_TAP_SLOP_PX = 12;
  * Measure; topology, else the part, under Topology (a face or edge filter), whose surface
  * never selects that part: a hover lights it, so the pointer shows what a press there
  * reaches, and a press asks for its faces — by mouse or by touch alike. Nothing at all while
- * picking is off: every press and release asks, and a raycast can materialize deformation
- * buffers and enqueue a BVH build for an answer that is always "nothing".
+ * picking is off: every press and release asks, and a raycast can enqueue a BVH build for
+ * an answer that is always "nothing".
  */
 export function resolveViewerReferencePick({
   pickMode,

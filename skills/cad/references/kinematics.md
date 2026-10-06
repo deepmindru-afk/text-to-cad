@@ -203,9 +203,7 @@ carries data, never code, and nothing runs a clip after the build.
 - A handle's methods chain, each returning the handle:
   `.rotate(axis, degrees, origin=(0, 0, 0))`, `.translate(vector)`,
   `.transform(matrix)` (a rigid 4x4, row-major, translation in the last
-  column), `.opacity(value)` (0..1, clamped), `.visible(flag)`, and
-  `.deform_tube(...)` for flexible swept bodies; see
-  [tube deformation and morph export](animation-deformation.md).
+  column), `.opacity(value)` (0..1, clamped), and `.visible(flag)`.
 - Transform calls PREMULTIPLY: a later call acts in world space on the part as
   already moved. Above, the spinner turns about its own axis first and the
   platter's turn then carries it, so the spin rides the orbit; in the other
@@ -342,8 +340,6 @@ The request is a clip name, or an object whose keys are all optional but `clip`:
 | `seconds` | what is left of the clip from `start` | how much of the clip to bake |
 | `start` | `0` | seconds into the clip where the span begins; must be inside it |
 | `drop` | `[]` | effects to bake STATIC instead of refusing: `opacity`, `visible` |
-| `deform` | `refuse` | what to do with `.deform_tube()`: `refuse`, `morph`, `rest` |
-| `deformTolerance` | `1.0` | `morph` only — millimetres the baked tubes may sit from the clip's own deformation, `0.01`..`10` |
 
 The span is resolved exactly as `--video`'s is — a looping clip defaults to one
 whole cycle, a clip that stops gets what is left of it, and `fps * seconds` is
@@ -359,16 +355,12 @@ picks where in the CLIP the span begins and the file still opens at t = 0.
 | `.rotate()` about a pivot, `.transform()` | sampled rotation and translation channels |
 | `.opacity()` | **refused.** glTF has no animated opacity. `"drop": ["opacity"]` bakes the value at `start` as a material alpha, and warns |
 | `.visible()` | **refused.** Same reason. `"drop": ["visible"]` omits whatever is hidden at `start`, and warns — an occurrence dropped this way loses its motion too, because a node that is not in the file cannot be animated |
-| `.deform_tube()` | **refused by default.** Per-vertex motion, not a node transform. `"deform": "morph"` bakes it as glTF morph targets; see [deformation](animation-deformation.md); `"deform": "rest"` ships those tubes at rest shape and warns |
 
 Nothing is dropped quietly: an effect the file cannot carry stops the export and
-names the occurrences, so a hand whose tendons froze on the way out is a refusal
-rather than a finished-looking file. Render the clip with
+names the occurrences, so a fade that froze on the way out is a refusal rather
+than a finished-looking file. Render the clip with
 `cadgen step snapshot --animation <clip> --video` when the motion is one of
 those — `--video` needs the clip named too, so both flags go together.
-
-For `.deform_tube()` authoring, morph fitting, memory limits and braid export
-limitations, read [tube deformation and morph export](animation-deformation.md).
 
 The CAD Viewer plays a GLB's own rigid, skinned and morph animation in preview,
 from the playbar under the model.

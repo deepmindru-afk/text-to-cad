@@ -1,7 +1,7 @@
 """Every renderer draws, between keys, what cadgen's baker assumed it would.
 
 The baker drops a key only when ITS interpolation (``_pose_at`` for a transform,
-``_lerp_path`` for a tube) rebuilds the dropped samples within tolerance, so the
+a lerp for an opacity) rebuilds the dropped samples within tolerance, so the
 guarantee holds only while @text-to-cad/core's ``animationRuntime.js`` interpolates
 identically. ``animationRuntime.parity.json`` beside it holds baked keyframes and
 the frames a renderer must draw from them at times between keys: this test pins
@@ -35,7 +35,7 @@ def _at(times: list[float], t: float) -> tuple[int, float]:
 def frame(clip: dict, t: float) -> dict:
     """What a renderer draws for ``clip`` at ``t``, with the baker's interpolation."""
     local = t % clip["duration"] if clip["loop"] else min(max(t, 0.0), clip["duration"])
-    out: dict = {"matrices": {}, "styles": {}, "tubes": {}}
+    out: dict = {"matrices": {}, "styles": {}}
     for track in clip["tracks"]:
         i, u = _at(track["times"], local)
         if "transform" in track:
@@ -61,17 +61,6 @@ def frame(clip: dict, t: float) -> dict:
             if track["visible"][i] is not None:
                 for target in track["targets"]:
                     out["styles"].setdefault(target, {})["visible"] = track["visible"][i]
-        else:
-            a = track["tube"][i]
-            b = track["tube"][i + 1] if u > 0 else None
-            if a is None:
-                continue
-            shape = [segment["kind"] for segment in a["path"]["segments"]]
-            same = b is not None and shape == [segment["kind"] for segment in b["path"]["segments"]]
-            path = ab._lerp_path(a["path"], b["path"], u) if same else a["path"]
-            twist = a["twistDeg"] + (b["twistDeg"] - a["twistDeg"]) * u if same else a["twistDeg"]
-            for target in track["targets"]:
-                out["tubes"][target] = {"pathSpec": path, "twistDeg": twist}
     return out
 
 
@@ -101,7 +90,7 @@ class TheBakersInterpolationIsTheRenderers(unittest.TestCase):
         for probe in parity["probes"]:
             with self.subTest(clip=probe["clip"], t=probe["t"]):
                 got = frame(clips[probe["clip"]], probe["t"])
-                for part in ("matrices", "styles", "tubes"):
+                for part in ("matrices", "styles"):
                     _close(self, got[part], probe[part], f"{probe['clip']}@{probe['t']:.4f}.{part}")
 
 

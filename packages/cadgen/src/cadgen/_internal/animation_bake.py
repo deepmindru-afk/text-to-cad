@@ -30,11 +30,6 @@ moves identically. ``times`` start at 0, rise strictly, and end at or before
     opacity    0..1 | null                     lerp between numbers; null is the
                                               material's own, held
     visible    true | false | null             held; null is the rest state
-    tube       {"path", "twistDeg"} | null     the path's numbers lerp while its
-                                              segment kinds match, held otherwise;
-                                              the track also carries "rest",
-                                              "maxSegmentLength" and, for a braided
-                                              finish, "braid", constant through a clip
 
 A key interpolation rebuilds within tolerance is dropped (Ramer-Douglas-Peucker
 over each track), and a track whose keys are all one value keeps one key. A
@@ -43,18 +38,16 @@ two rigid transforms differ by an affine map, whose largest displacement over
 the box is at a corner, so the corners bound the error over every point of the
 model. A key's rates are the clip's own (central differences of its samples),
 so a smooth motion needs keys only where its curve changes character, and a
-part turns at most 120 degrees between two kept keys. A tube's tolerance is
-measured on points along its centerline and on how far its cross-sections turn.
+part turns at most 120 degrees between two kept keys.
 """
 
 from __future__ import annotations
 
 import bisect
-import json
 import math
 from typing import Any, Iterable, Mapping, Sequence
 
-CHANNELS = ("transform", "opacity", "visible", "tube")
+CHANNELS = ("transform", "opacity", "visible")
 
 # Transform error, as a fraction of the model's bounding-box diagonal, under which
 # a key is dropped: a tenth of a pixel with the whole model in view, and a pixel
@@ -63,9 +56,6 @@ CHANNELS = ("transform", "opacity", "visible", "tube")
 TRANSFORM_TOLERANCE = 1e-4
 LENGTH_FLOOR = 1e-4
 OPACITY_TOLERANCE = 1.0 / 512.0
-# How far a tube's cross-sections may turn from where the clip put them: its
-# twist, and its path's normal (the seed of its frame).
-TUBE_TURN_TOLERANCE_DEG = 0.1
 # A quaternion's sign is chosen to continue the one before it: a part that turns
 # further than this between two samples could be turning either way, and its
 # keys would not say which.
@@ -78,12 +68,6 @@ _LENGTH_DIGITS = 4
 _QUATERNION_DIGITS = 7
 _TIME_DIGITS = 6
 _OPACITY_DIGITS = 4
-
-_SEGMENT_FIELDS = {
-    "line": ("start", "end"),
-    "arc": ("center", "axis", "start", "sweepDeg"),
-    "bezier": ("points",),
-}
 
 
 class AnimationError(ValueError):
@@ -272,49 +256,6 @@ def _rigid(matrix: object) -> tuple:
     return r + (m[0][3], m[1][3], m[2][3])
 
 
-def _tube_path(value: object, name: str) -> dict[str, Any]:
-    """The shape of a tube centerline, checked and copied; its geometry (segments
-    meeting with matching tangents) is the renderer's tube runtime's to judge."""
-    if not isinstance(value, Mapping) or set(value) != {"normal", "segments"}:
-        raise AnimationError(f"{name} must be {{'normal': [x, y, z], 'segments': [...]}}")
-    segments = value["segments"]
-    if not isinstance(segments, (list, tuple)) or not segments:
-        raise AnimationError(f"{name}['segments'] must be a nonempty list")
-    out = []
-    for index, segment in enumerate(segments):
-        where = f"{name}['segments'][{index}]"
-        kind = segment.get("kind") if isinstance(segment, Mapping) else None
-        fields = _SEGMENT_FIELDS.get(kind)  # type: ignore[arg-type]
-        if fields is None:
-            raise AnimationError(f"{where} kind must be one of {', '.join(_SEGMENT_FIELDS)}")
-        if set(segment) != {"kind", *fields}:
-            raise AnimationError(f"{where} ({kind}) takes exactly: {', '.join(fields)}")
-        entry: dict[str, Any] = {"kind": kind}
-        for field in fields:
-            if field == "sweepDeg":
-                entry[field] = _number(segment[field], f"{where} sweepDeg")
-            elif field == "points":
-                points = list(segment[field])
-                if len(points) != 4:
-                    raise AnimationError(f"{where} points must be four control points")
-                entry[field] = [list(_vec3(point, f"{where} point")) for point in points]
-            else:
-                entry[field] = list(_vec3(segment[field], f"{where} {field}"))
-        out.append(entry)
-    return {"normal": list(_unit(value["normal"], f"{name}['normal']")), "segments": out}
-
-
-def _braid(value: object) -> dict[str, Any] | None:
-    if value is None:
-        return None
-    if not isinstance(value, Mapping) or set(value) != {"pitch", "depth", "strands"}:
-        raise AnimationError("braid must be {'pitch', 'depth', 'strands'}")
-    pitch, depth, strands = _number(value["pitch"], "braid pitch"), _number(value["depth"], "braid depth"), value["strands"]
-    if pitch <= 0 or depth < 0 or isinstance(strands, bool) or not isinstance(strands, int) or not 2 <= strands <= 64 or strands % 2:
-        raise AnimationError("braid needs a positive pitch, a nonnegative depth and an even strand count from 2 to 64")
-    return {"pitch": pitch, "depth": depth, "strands": strands}
-
-
 # --- What a clip targets ---------------------------------------------------------
 
 
@@ -368,13 +309,12 @@ def animation_targets(descriptor: Mapping[str, Any]) -> AnimationTargets:
 
 
 class _Frame:
-    __slots__ = ("transform", "opacity", "visible", "tube")
+    __slots__ = ("transform", "opacity", "visible")
 
     def __init__(self) -> None:
         self.transform: dict[str, tuple] = {}
         self.opacity: dict[str, float] = {}
         self.visible: dict[str, bool] = {}
-        self.tube: dict[str, dict[str, Any]] = {}
 
 
 class Handle:
@@ -411,29 +351,6 @@ class Handle:
     def visible(self, flag: object) -> "Handle":
         for leaf in self._leaves:
             self._frame.visible[leaf] = bool(flag)
-        return self
-
-    def deform_tube(
-        self,
-        *,
-        rest: object,
-        path: object,
-        twist_deg: object = 0.0,
-        max_segment_length: object = 1.0,
-        braid: object = None,
-    ) -> "Handle":
-        segment = _number(max_segment_length, "deform_tube max_segment_length")
-        if segment < 0.05:
-            raise AnimationError("deform_tube max_segment_length must be at least 0.05 mm")
-        spec = {
-            "rest": _tube_path(rest, "deform_tube rest"),
-            "path": _tube_path(path, "deform_tube path"),
-            "twistDeg": _number(twist_deg, "deform_tube twist_deg"),
-            "maxSegmentLength": segment,
-            "braid": _braid(braid),
-        }
-        for leaf in self._leaves:
-            self._frame.tube[leaf] = spec
         return self
 
 
@@ -590,57 +507,6 @@ def _transform_keys(
     return keep, pivot, [[_round(c, digits[n]) for n, c in enumerate(keys[k])] for k in keep]
 
 
-def _lerp_path(a: Mapping[str, Any], b: Mapping[str, Any], u: float) -> dict[str, Any]:
-    """Every number of two same-shaped centerlines, lerped: what every renderer does."""
-
-    def lerp3(p: Sequence[float], q: Sequence[float]) -> list[float]:
-        return [p[n] + (q[n] - p[n]) * u for n in range(3)]
-
-    segments = []
-    for one, other in zip(a["segments"], b["segments"]):
-        segment: dict[str, Any] = {"kind": one["kind"]}
-        for field in _SEGMENT_FIELDS[one["kind"]]:
-            if field == "sweepDeg":
-                segment[field] = one[field] + (other[field] - one[field]) * u
-            elif field == "points":
-                segment[field] = [lerp3(p, q) for p, q in zip(one[field], other[field])]
-            else:
-                segment[field] = lerp3(one[field], other[field])
-        segments.append(segment)
-    return {"normal": lerp3(a["normal"], b["normal"]), "segments": segments}
-
-
-def _path_points(path: Mapping[str, Any]) -> list[tuple[float, float, float]]:
-    """Points ON a centerline, at fixed fractions of each segment: what a tube
-    error is measured on (an arc's center, say, is not on the tube at all)."""
-    points = []
-    for segment in path["segments"]:
-        kind = segment["kind"]
-        for f in (0.0, 0.25, 0.5, 0.75, 1.0):
-            if kind == "line":
-                s, e = segment["start"], segment["end"]
-                points.append(tuple(s[n] + (e[n] - s[n]) * f for n in range(3)))
-            elif kind == "arc":
-                turn = _rotation(_unit(segment["axis"], "arc axis"), segment["sweepDeg"] * f, tuple(segment["center"]))
-                points.append(_apply_point(turn, turn[9:], segment["start"]))
-            else:
-                p0, p1, p2, p3 = segment["points"]
-                g = 1.0 - f
-                points.append(tuple(
-                    g * g * g * p0[n] + 3 * g * g * f * p1[n] + 3 * g * f * f * p2[n] + f * f * f * p3[n] for n in range(3)
-                ))
-    return points
-
-
-def _angle_deg(a: Sequence[float], b: Sequence[float]) -> float:
-    dot = sum(x * y for x, y in zip(a, b)) / (math.sqrt(sum(x * x for x in a)) * math.sqrt(sum(y * y for y in b)))
-    return math.degrees(math.acos(max(-1.0, min(1.0, dot))))
-
-
-def _shape(key: Mapping[str, Any] | None) -> tuple | None:
-    return None if key is None else tuple(segment["kind"] for segment in key["path"]["segments"])
-
-
 def _runs(values: list[Any], kind) -> list[int]:
     """Indices that must stay keys because the value's kind changes there: the
     last sample of one kind and the first of the next."""
@@ -657,23 +523,6 @@ def _round(value: float, digits: int) -> float:
 
 def _length(value: float) -> float:
     return _round(value, _LENGTH_DIGITS)
-
-
-def _rounded_tube(key: Mapping[str, Any]) -> dict[str, Any]:
-    path = key["path"]
-    segments = []
-    for segment in path["segments"]:
-        entry: dict[str, Any] = {"kind": segment["kind"]}
-        for field in _SEGMENT_FIELDS[segment["kind"]]:
-            value = segment[field]
-            if field == "points":
-                entry[field] = [[_length(c) for c in point] for point in value]
-            elif field == "sweepDeg":
-                entry[field] = _length(value)
-            else:
-                entry[field] = [_length(c) for c in value]
-        segments.append(entry)
-    return {"path": {"normal": [_round(c, _QUATERNION_DIGITS) for c in path["normal"]], "segments": segments}, "twistDeg": _length(key["twistDeg"])}
 
 
 # --- A clip, end to end ----------------------------------------------------------
@@ -743,48 +592,6 @@ def bake_clip(clip_id: str, clip: Any, targets: AnimationTargets, bounds: Sequen
         values = list(sequence)
         keep = [0] + [k for k in range(1, len(values)) if values[k] != values[k - 1]]
         tracks.append(_track(leaves, rounded_times, keep, "visible", [values[k] for k in keep]))
-
-    tube_sequences: dict[tuple, list[str]] = {}
-    tube_specs: dict[tuple, list[dict[str, Any] | None]] = {}
-    for leaf in dict.fromkeys(leaf for frame in frames for leaf in frame.tube):
-        specs = [frame.tube.get(leaf) for frame in frames]
-        constant = {json.dumps([s["rest"], s["maxSegmentLength"], s["braid"]], sort_keys=True) for s in specs if s}
-        if len(constant) > 1:
-            raise AnimationError(
-                f"animation clip {clip_id!r} part {leaf}: a tube's rest path, max_segment_length "
-                "and braid must stay the same through a clip; only its path and twist move"
-            )
-        signature = tuple(None if s is None else json.dumps([s["path"], s["twistDeg"]], sort_keys=True) for s in specs)
-        tube_sequences.setdefault(signature, []).append(leaf)
-        tube_specs.setdefault(signature, specs)
-    for signature, leaves in tube_sequences.items():
-        specs = tube_specs[signature]
-        keys = [None if s is None else {"path": s["path"], "twistDeg": s["twistDeg"]} for s in specs]
-        truth = [None if key is None else _path_points(key["path"]) for key in keys]
-
-        def tube_error(i: int, j: int, k: int) -> float:
-            # In tolerances: the centerline's points in mm, and the frame (the
-            # path's normal and the twist) in tenths of a degree.
-            a, b, c = keys[i], keys[j], keys[k]
-            if a is None:  # a run of nulls: _runs anchors both ends, so all null, held
-                return 0.0
-            u = (times[k] - times[i]) / (times[j] - times[i])
-            path = _lerp_path(a["path"], b["path"], u)
-            moved = max(math.dist(p, q) for p, q in zip(_path_points(path), truth[k]))
-            turned = max(
-                abs(a["twistDeg"] + (b["twistDeg"] - a["twistDeg"]) * u - c["twistDeg"]),
-                _angle_deg(path["normal"], c["path"]["normal"]),
-            )
-            return max(moved / tolerance, turned / TUBE_TURN_TOLERANCE_DEG)
-
-        keep = _keep(len(keys), tube_error, 1.0, _runs(keys, _shape))
-        rest = next(s for s in specs if s)
-        track = _track(leaves, rounded_times, keep, "tube", [None if keys[k] is None else _rounded_tube(keys[k]) for k in keep])
-        track["rest"] = _rounded_tube({"path": rest["rest"], "twistDeg": 0.0})["path"]
-        track["maxSegmentLength"] = rest["maxSegmentLength"]
-        if rest["braid"] is not None:
-            track["braid"] = rest["braid"]
-        tracks.append(track)
 
     tracks.sort(key=lambda track: (CHANNELS.index(_channel_of(track)), _natural(track["targets"][0])))
     return {
@@ -868,7 +675,7 @@ def _check_track(track: object, where: str, duration: float) -> None:
     if not isinstance(track, Mapping):
         raise _fail(f"{where} must be an object")
     channels = [name for name in CHANNELS if name in track]
-    extra = {"transform": {"pivot"}, "tube": {"rest", "maxSegmentLength", "braid"}}
+    extra = {"transform": {"pivot"}}
     allowed = {"targets", "times", *channels} | (extra.get(channels[0], set()) if len(channels) == 1 else set())
     if len(channels) != 1 or set(track) - allowed:
         raise _fail(f"{where} must carry targets, times and exactly one of {', '.join(CHANNELS)}")
@@ -888,15 +695,11 @@ def _check_track(track: object, where: str, duration: float) -> None:
             ok = isinstance(value, list) and len(value) == 13 and all(_finite(c) for c in value)
         elif channel == "opacity":
             ok = value is None or (_finite(value) and 0 <= value <= 1)
-        elif channel == "visible":
-            ok = value is None or isinstance(value, bool)
         else:
-            ok = value is None or (isinstance(value, Mapping) and set(value) == {"path", "twistDeg"} and _finite(value["twistDeg"]))
+            ok = value is None or isinstance(value, bool)
         if not ok:
             raise _fail(f"{where} has a malformed {channel} value: {value!r}")
     if channel == "transform":
         pivot = track.get("pivot")
         if not isinstance(pivot, list) or len(pivot) != 3 or not all(_finite(c) for c in pivot):
             raise _fail(f"{where} needs its pivot, three numbers")
-    if channel == "tube" and (not isinstance(track.get("rest"), Mapping) or not _finite(track.get("maxSegmentLength"))):
-        raise _fail(f"{where} needs its rest path and maxSegmentLength")

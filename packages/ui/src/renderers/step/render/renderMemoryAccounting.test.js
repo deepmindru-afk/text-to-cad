@@ -73,7 +73,7 @@ test("component bytes are counted once across occurrences, picking is counted se
   assert.equal(totals.gpuEstimatedBytes, totals.surfaceBytes + totals.pickBytes);
 });
 
-test("surface instances and packed deformation backing buffers are admitted", () => {
+test("surface instances are admitted", () => {
   const shared = geometry(2);
   const records = [0, 1].map(() => ({
     mesh: new THREE.Mesh(shared, new THREE.MeshStandardMaterial())
@@ -85,10 +85,6 @@ test("surface instances and packed deformation backing buffers are admitted", ()
   );
   instance.setColorAt(0, new THREE.Color("white"));
   instance.setColorAt(1, new THREE.Color("white"));
-  const packed = new ArrayBuffer(128);
-  records[0].tubeDeformationState = {
-    mapping: [new Uint8Array(packed, 16, 8)]
-  };
 
   const directTotals = renderMemoryAccounting({
     displayRecords: records,
@@ -104,7 +100,6 @@ test("surface instances and packed deformation backing buffers are admitted", ()
   assert.equal(totals.surfaceInstanceSets, 1);
   assert.equal(totals.surfaceInstances, 2);
   assert.equal(totals.surfaceInstanceBytes, instanceBytes);
-  assert.equal(totals.deformationBytes, packed.byteLength, "a short view retains its full backing allocation");
   assert.equal(totals.materials, 3, "the instance draw's cloned material is owned too");
   assert.equal(totals.displayCpuBytes, totals.surfaceBytes + totals.edgeBytes);
   assert.ok(totals.memoryPolicy.retainedByCategory.displayCpu >= instanceBytes);

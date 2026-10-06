@@ -39,9 +39,7 @@ test("every probe frame is what cadgen's baker interpolates, on every channel", 
       const e = matrix.elements; // column-major
       return [id, [0, 1, 2, 3].map((row) => [0, 1, 2, 3].map((column) => e[column * 4 + row]))];
     }));
-    const tubes = Object.fromEntries([...frame.deformations].map(([id, tube]) => [id, { pathSpec: tube.pathSpec, twistDeg: tube.twistDeg }]));
     assertClose(matrices, probe.matrices, `${where}.matrices`);
     assertClose(Object.fromEntries(frame.styles), probe.styles, `${where}.styles`);
-    assertClose(tubes, probe.tubes, `${where}.tubes`);
   }
 });

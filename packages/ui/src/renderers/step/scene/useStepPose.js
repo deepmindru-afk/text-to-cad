@@ -167,7 +167,7 @@ export function useStepPose(layers) {
         return;
       }
       const casters = captureShadowCasters(runtime.displayRecords);
-      resetStepModuleRecordEffects(runtime.displayRecords, THREE);
+      resetStepModuleRecordEffects(runtime.displayRecords);
       for (const record of runtime.displayRecords) {
         applyDisplayRecordTransform(runtime.THREE, record, runtime.modelRadius || 1);
       }

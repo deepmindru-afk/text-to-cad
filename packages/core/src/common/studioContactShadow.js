@@ -8,7 +8,7 @@
 // steps. HEIGHTS: a depth map of the shadow casters rendered UP through the floor by
 // a light that is never added to the scene (it lights nothing and no material samples
 // it; three's own shadow pass draws it, so it sees exactly what casts the key's shadow:
-// visibility, clipping, instancing and deformation included). This is the expensive
+// visibility, clipping and instancing included). This is the expensive
 // step, a draw of every caster. COMPOSITE: three small full-screen passes that turn
 // the heights and the key light's own shadow map into the floor's texture.
 //

@@ -24,15 +24,10 @@ names. A handle's methods chain:
     .transform(matrix)        # a rigid 4x4, row-major, translation in the last column
     .opacity(value)           # 0..1
     .visible(flag)
-    .deform_tube(rest=..., path=..., twist_deg=0, max_segment_length=1, braid=None)
 
 Transform calls PREMULTIPLY: a later call acts in world space on the
 already-moved part, so a spin about a part's own center followed by an orbit
-about the assembly origin makes the spin ride the orbit. ``deform_tube`` bends
-a swept tube body from its ``rest`` centerline onto ``path``; a centerline is
-``{"normal": [x, y, z], "segments": [...]}`` of ``line`` (start, end), ``arc``
-(center, axis, start, sweepDeg) and ``bezier`` (four points) segments that
-meet with matching tangents.
+about the assembly origin makes the spin ride the orbit.
 
 This module must import light (no OCP, no numpy): it runs in the
 decoration-time pre-gate window. Sampling happens at build time

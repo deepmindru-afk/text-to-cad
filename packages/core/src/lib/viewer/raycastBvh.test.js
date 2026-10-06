@@ -208,18 +208,13 @@ test("deferred display BVHs reject far rays and share one build after an exact f
   assert.equal(mirrorRay.intersectObject(second, false)[0]?.faceIndex, 2);
 });
 
-test("deferred BVHs honor deformation before bounds and release before the idle build", async () => {
+test("deferred BVHs release before the idle build", async () => {
   const geometry = indexedGeometry();
   geometry.computeBoundingBox();
   const mesh = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ side: THREE.DoubleSide }));
   mesh.updateMatrixWorld();
-  mesh.userData.cadBeforeRaycast = () => {
-    geometry.translate(10, 0, 0);
-    geometry.computeBoundingBox();
-    delete mesh.userData.cadBeforeRaycast;
-  };
   scheduleRuntimeRaycastBvh({ displayRecords: [{ mesh }] }, { deferUntilRaycast: true });
-  const ray = new THREE.Raycaster(new THREE.Vector3(10.6, 0.3, 5), new THREE.Vector3(0, 0, -1));
+  const ray = new THREE.Raycaster(new THREE.Vector3(0.6, 0.3, 5), new THREE.Vector3(0, 0, -1));
   assert.equal(ray.intersectObject(mesh, false)[0]?.faceIndex, 0);
   assert.equal(geometry.userData.__bvhQueued, true);
   delete geometry.userData.__bvhQueued;
@@ -241,7 +236,4 @@ test("deferred BVH denied admission leaves first and later picks exact", async (
   await tick();
   assert.equal(geometry.boundsTree, undefined);
   assert.equal(ray.intersectObject(mesh, false)[0]?.faceIndex, 0);
-  await tick();
-  mesh.userData.cadBeforeRaycast = () => false;
-  assert.deepEqual(ray.intersectObject(mesh, false), [], "deformation rejection remains authoritative");
 });

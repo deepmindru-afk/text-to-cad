@@ -16,15 +16,14 @@ test("ledger accounts retained, worker reservations, GPU estimates and fixed hea
   policy.setRetained("selectors", 40);
   policy.setRetained("bvh", 20);
   policy.setRetained("gpuEstimated", 300);
-  policy.setRetained("deformation", 10);
   policy.setRetained("assetCaches", 30);
   policy.setRetained("workerResidentEstimated", 25);
   policy.setRetained("replacementPending", 15);
   const admitted = policy.reserve({ category: "workerInFlight", bytes: 100, label: "component a" });
   assert.equal(admitted.ok, true);
   assert.deepEqual(policy.snapshot().inFlightByCategory, { workerInFlight: 100 });
-  assert.equal(policy.snapshot().estimatedOwnedBytes, 840);
-  assert.equal(policy.snapshot().availableBytes, 60);
+  assert.equal(policy.snapshot().estimatedOwnedBytes, 830);
+  assert.equal(policy.snapshot().availableBytes, 70);
   policy.release(admitted.token);
   assert.equal(policy.snapshot().reservationCount, 0);
 });

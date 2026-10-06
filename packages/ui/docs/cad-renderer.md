@@ -776,7 +776,7 @@ The optional `@text-to-cad/ui/file-viewer/empty` entry exports `EmptyCadBackdrop
   of that is a new scene to the viewport. `plan()` decides reuse or rebuild (same
   model, same structural build key, same viewer theme: the publish is handed to the
   live build, which reconciles its records, so occurrences on screen keep their
-  meshes, materials, visual and deformation state and BVHs); `complete` is false
+  meshes, materials, visual state and BVHs); `complete` is false
   while components are still to come; `bounds` is the scene as posed when it was
   last synced and `restBounds` the authored placement; `placedObjects()` is the
   display records. After every sync the renderer calls `viewport.commitScene()`.

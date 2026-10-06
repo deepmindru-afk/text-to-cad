@@ -160,7 +160,6 @@ const TRACK = {
   transform: [[0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0], [0, 0, 1, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0]]
 };
 const CLIP = { id: "lift", label: "Lift", duration: 2, loop: true, tracks: [TRACK] };
-const REST_PATH = { normal: [0, 0, 1], segments: [{ kind: "line", start: [0, 0, 0], end: [10, 0, 0] }] };
 
 test("sidecars are closed, schema-bound, document-bound, and validate their animation", () => {
   const valid = {
@@ -209,8 +208,8 @@ test("an animation section is an ordered list of keyframed clips, and each malfo
     [clip({ loop: "yes" }), /clip "lift" needs a label, a positive duration and a boolean loop/],
     [clip({ tracks: {} }), /clip "lift" tracks must be a list/],
     [clip({ tracks: [null] }), /clip "lift" track 0 must be an object/],
-    [track({ opacity: [1, 1] }), /track 0 must carry targets, times and exactly one of transform, opacity, visible, tube/],
-    [track({ rest: REST_PATH }), /exactly one of/],
+    [track({ opacity: [1, 1] }), /track 0 must carry targets, times and exactly one of transform, opacity, visible/],
+    [track({ easing: "linear" }), /exactly one of/],
     [track({ targets: [] }), /targets must be a nonempty list of occurrence ids/],
     [track({ times: [0, 0] }), /times must rise strictly from 0 to at most the duration/],
     [track({ times: [0.5, 1] }), /times must rise strictly/],
@@ -219,9 +218,7 @@ test("an animation section is an ordered list of keyframed clips, and each malfo
     [track({ transform: [TRACK.transform[0], [0, 0, 1]] }), /has a malformed transform value: \[0,0,1\]/],
     [track({ pivot: [0, 0] }), /needs its pivot, three numbers/],
     [only({ opacity: [1.5] }), /has a malformed opacity value: 1\.5/],
-    [only({ visible: ["yes"] }), /has a malformed visible value: "yes"/],
-    [only({ rest: REST_PATH, maxSegmentLength: 1, tube: [{ path: REST_PATH }] }), /has a malformed tube value/],
-    [only({ tube: [null] }), /needs its rest path and maxSegmentLength/]
+    [only({ visible: ["yes"] }), /has a malformed visible value: "yes"/]
   ]) {
     assert.throws(() => normalizeSourceAnimation(block), message, JSON.stringify(block));
   }

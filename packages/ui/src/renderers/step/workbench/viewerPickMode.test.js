@@ -6,14 +6,9 @@ import { VIEWER_PICK_MODE } from "@text-to-cad/core/lib/viewer/constants.js";
 import { syncSelectorPickGroups } from "@text-to-cad/core/lib/viewer/selectorPickGroups.js";
 import { applySceneState } from "@text-to-cad/core/common/applySceneState.js";
 import { resetStepModuleRecordEffects } from "@text-to-cad/core/common/stepModuleEffects.js";
-import { loadTubeDeformation } from "@text-to-cad/core/common/tubeDeformationChunk.js";
-
-// A tube track needs the lazy tube runtime, which production loads through
-// loadSourceAnimation. This clip is built by hand, so load it here.
-await loadTubeDeformation();
 import { viewerHiddenPartIdsForRenderPane, viewerPickModeForRenderPane, viewerSelectedPartIdsForRenderPane, viewerSelectorRuntimeForRenderPane } from "./viewerPickMode.js";
 
-test("Render retains picking proxies while STEP transforms and tube deformation still apply", () => {
+test("Render retains picking proxies while STEP transforms still apply", () => {
   const selectors = { proxy: {
     edgePositions: new Float32Array([0, 0, 0, 10, 0, 0]), edgeIndices: new Uint32Array([0, 1]),
     vertexPositions: new Float32Array([0, 0, 0])
@@ -33,11 +28,8 @@ test("Render retains picking proxies while STEP transforms and tube deformation 
   try {
     syncSelectorPickGroups(runtime, selectorRuntime);
     assert.ok(runtime.edgePickGroup.children.length > 0);
-    const path = y => ({ normal: [0, 0, 1], segments: [{ kind: "line", start: [0, y, 0], end: [10, y, 0] }] });
-    // The rope lifts 5 mm and its centreline slides 10 mm sideways over the second.
+    // The part lifts 5 mm.
     const clip = { id: "lift", label: "Lift", duration: 1, loop: true, tracks: [
-      { targets: ["o1"], times: [0, 1], rest: path(0), maxSegmentLength: 1,
-        tube: [{ path: path(0), twistDeg: 0 }, { path: path(10), twistDeg: 0 }] },
       { targets: ["o1"], times: [0], pivot: [0, 0, 0], transform: [[0, 0, 5, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0]] }
     ] };
     const result = applySceneState(THREE, {
@@ -46,9 +38,8 @@ test("Render retains picking proxies while STEP transforms and tube deformation 
     });
     assert.equal(result.transformDetected, true);
     assert.deepEqual(new THREE.Vector3().applyMatrix4(record.effectMatrix).toArray(), [0, 0, 5]);
-    assert.deepEqual(Array.from(record.geometry.attributes.position.array.slice(0, 3)), [0, 5, 1]);
   } finally {
-    resetStepModuleRecordEffects([record], THREE);
+    resetStepModuleRecordEffects([record]);
     geometry.dispose();
     mesh.material.dispose();
   }

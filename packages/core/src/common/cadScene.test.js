@@ -23,12 +23,6 @@ import {
   PART_SELECTED_HIGHLIGHT_BLEND,
   partHighlightSurfaceColor
 } from "../lib/viewer/partHighlight.js";
-import { applyRecordTubeDeformation, normalizeTubeDeformation } from "./tubeDeformation.js";
-import { loadTubeDeformation } from "./tubeDeformationChunk.js";
-
-// A tube track needs the lazy tube runtime, which production loads through
-// loadSourceAnimation. These clips are built by hand, so load it here.
-await loadTubeDeformation();
 import { applySceneState } from "./applySceneState.js";
 import { applyPartVisualState as applyViewerPartVisualState } from "../lib/viewer/partVisualState.js";
 import { syncRuntimeStepClipPlane } from "../lib/viewer/modelRuntime.js";
@@ -779,63 +773,6 @@ test("instanced edge GPU budget: edge bytes stay under 10% of surface bytes and 
   scene.update({ source: { ...meshData, parts: [...meshData.parts.slice(1, 39), meshData.parts[0]] } });
   assert.equal(set.slotCount, 39, "o0 re-enters in the slot the trailing release freed or o0's own");
   assert.equal(set.liveCount, 39);
-  scene.dispose();
-});
-
-test("a deformed tube leaves the instanced edge draw for a private, bendable line object; the component buffers stay shared", () => {
-  const sourceMesh = surfComponentMeshData();
-  const savedPositions = sourceMesh.vertices.slice();
-  const savedNormals = sourceMesh.normals.slice();
-  const meshData = {
-    vertices: new Float32Array(0), indices: new Uint32Array(0),
-    bounds: sourceMesh.bounds,
-    parts: [{ id: "tube", sourceMeshKey: "tube", sourceMesh, vertexCount: 4, triangleCount: 2, bounds: sourceMesh.bounds }]
-  };
-  const scene = buildModel(THREE, meshData, { renderPartsIndividually: true });
-  const record = scene.displayRecords[0];
-  assert.equal(record.geometry.getAttribute("normal").array, sourceMesh.normals);
-  assert.equal(record.geometry.getAttribute("position").array, sourceMesh.vertices);
-  assert.equal(record.geometry.index.array, sourceMesh.indices);
-  const set = record.edgeInstance.set;
-  assert.equal(set.liveCount, 1);
-  const savedEdgePositions = sourceMesh.cadEdgePositions.slice();
-  record.gpuTubeDeformationAllowed = false;
-  const rest = { normal: [0, 0, 1], segments: [{ kind: "line", start: [0, 0, 0], end: [3, 0, 0] }] };
-  const path = { normal: [0, 0, 1], segments: [{ kind: "line", start: [0, 0, 2], end: [0, 3, 2] }] };
-  applyRecordTubeDeformation(THREE, record, normalizeTubeDeformation({ rest, path, maxSegmentLength: 1000 }));
-  assert.notEqual(record.geometry.getAttribute("normal").array, sourceMesh.normals);
-  assert.notDeepEqual(record.geometry.getAttribute("position").array, savedPositions);
-  assert.deepEqual(sourceMesh.vertices, savedPositions);
-  assert.deepEqual(sourceMesh.normals, savedNormals);
-  // Each basic-only class has private segment positions and a mutable material;
-  // the component's shared points stay put.
-  assert.equal(record.edgeInstance, null);
-  assert.equal(set.liveCount, 0);
-  assert.equal(set.geometry.instanceCount, 0);
-  assert.equal(record.edges.isGroup, true);
-  assert.equal(record.edgeMaterials.length, 2);
-  assert.ok(record.edges.children.every((line) => line.isLineSegments));
-  const bentEdge = record.edges.children[0].geometry.getAttribute("position");
-  assert.notEqual(bentEdge.array, sourceMesh.cadEdgePositions);
-  assert.notDeepEqual(Array.from(bentEdge.array).slice(0, 3), [0, 0, 0]);
-  assert.equal(record.edges.children[0].geometry.index, null);
-  const basicGeometries = record.edges.children.map((line) => line.geometry);
-  const basicMaterials = [...record.edgeMaterials];
-  const otherScene = buildModel(THREE, meshData, { appearance: "light", renderPartsIndividually: true });
-  const otherColors = [...otherScene.displayRecords[0].edgeInstance.set.uniforms.cadClassColor.value.elements];
-  scene.update({ appearance: "dark" });
-  assert.equal(scene.displayRecords[0], record);
-  assert.deepEqual(record.edges.children.map((line) => line.geometry), basicGeometries);
-  assert.deepEqual(record.edgeMaterials, basicMaterials);
-  assert.deepEqual(record.edgeMaterials.map((material) => material.color.getHexString()), ["253443", "667788"]);
-  scene.update({ selection: { selectedPartIds: ["tube"] } });
-  assert.ok(record.edgeMaterials.every((material) => material.color.getHexString() === "8dc5ff"));
-  scene.update({ selection: { selectedPartIds: [] }, appearance: "light" });
-  assert.deepEqual(record.edgeMaterials.map((material) => material.color.getHexString()), ["253443", "667788"]);
-  assert.deepEqual(otherScene.displayRecords[0].edgeInstance.set.uniforms.cadClassColor.value.elements, otherColors);
-  otherScene.dispose();
-  assert.deepEqual(sourceMesh.cadEdgePositions, savedEdgePositions);
-  assert.deepEqual(record.edges.matrix.elements, record.mesh.matrix.elements);
   scene.dispose();
 });
 
@@ -1654,36 +1591,6 @@ test("in-place mutable settings changes are compared with the last applied snaps
   scene.dispose();
 });
 
-test("update({ source }) keeps a deformed tube's private geometry and deformation state", () => {
-  const component = surfComponentMeshData();
-  const scene = buildModel(THREE, twoComponentPackage(component, component, [0]), { renderPartsIndividually: true });
-  const record = scene.displayRecords[0];
-  record.gpuTubeDeformationAllowed = false;
-  const rest = { normal: [0, 0, 1], segments: [{ kind: "line", start: [0, 0, 0], end: [3, 0, 0] }] };
-  const path = { normal: [0, 0, 1], segments: [{ kind: "line", start: [0, 0, 2], end: [0, 3, 2] }] };
-  const spec = normalizeTubeDeformation({ rest, path, maxSegmentLength: 1000 });
-  applyRecordTubeDeformation(THREE, record, spec);
-  const state = record.tubeDeformationState;
-  const privateGeometry = record.geometry;
-  const edgeGeometry = record.edges.geometry;
-  assert.ok(state.active);
-  assert.equal(record.edgeInstance, null, "a deformed tube draws its own edges");
-
-  scene.update({ source: twoComponentPackage(component, component, [0, 2]) });
-  assert.equal(scene.displayRecords[0], record);
-  assert.equal(record.tubeDeformationState, state, "deformation state survives the publish");
-  assert.equal(record.geometry, privateGeometry, "so does its private geometry");
-  assert.equal(record.edges.geometry, edgeGeometry);
-  assert.equal(record.mesh.geometry, privateGeometry);
-  // Without a scene module the publish resets the pose; re-applying the same
-  // deformation reuses the retained state instead of refining the rest surface again.
-  applyRecordTubeDeformation(THREE, record, spec);
-  assert.equal(record.tubeDeformationState, state);
-  assert.equal(record.geometry, privateGeometry);
-  assert.ok(state.active);
-  scene.dispose();
-});
-
 test("LOD publication preserves unaffected surface sets and retires only replaced geometry", () => {
   const componentA = surfComponentMeshData();
   const componentB = surfComponentMeshData();
@@ -1757,36 +1664,6 @@ test("selection slots remain inactive across source publications and reactivate 
   scene.dispose();
 });
 
-test("a deformed occurrence leaves its surface slot inactive through progressive publications", () => {
-  const component = surfComponentMeshData();
-  const scene = buildModel(THREE, composedPackage(component, 4), { renderPartsIndividually: true });
-  const bent = scene.displayRecords[0];
-  const { set, slot } = bent.surfaceInstance;
-  bent.gpuTubeDeformationAllowed = false;
-  const spec = normalizeTubeDeformation({
-    rest: { normal: [0, 0, 1], segments: [{ kind: "line", start: [0, 0, 0], end: [3, 0, 0] }] },
-    path: { normal: [0, 0, 1], segments: [{ kind: "line", start: [0, 0, 2], end: [0, 3, 2] }] },
-    maxSegmentLength: 1000
-  });
-  applyRecordTubeDeformation(THREE, bent, spec);
-  const privateGeometry = bent.geometry;
-  const zero = new THREE.Matrix4().makeScale(0, 0, 0);
-  const actual = new THREE.Matrix4();
-  for (let revision = 0; revision < 3; revision += 1) {
-    scene.update({ source: composedPackage(component, 4) });
-    assert.equal(bent.surfaceInstance.set, set, "the other occurrences retain their shared draw");
-    assert.equal(bent.geometry, privateGeometry);
-    assert.equal(bent.material.visible, true);
-    set.object.getMatrixAt(slot, actual);
-    assert.deepEqual(actual.elements, zero.elements, "the rest surface cannot duplicate the private deformation");
-    applyRecordTubeDeformation(THREE, bent, spec);
-    applyDisplayRecordTransform(THREE, bent);
-    set.object.getMatrixAt(slot, actual);
-    assert.deepEqual(actual.elements, zero.elements);
-  }
-  scene.dispose();
-});
-
 test("source appearance and mirror changes invalidate only their surface pass membership", () => {
   const component = surfComponentMeshData();
   const scene = buildModel(THREE, composedPackage(component, 4), { renderPartsIndividually: true });
@@ -1816,7 +1693,7 @@ test("direct viewer effects and clip passes synchronize shared surfaces without 
   const { set, slot } = record.surfaceInstance;
   const matrix = new THREE.Matrix4();
   const zero = new THREE.Matrix4().makeScale(0, 0, 0);
-  const pass = ({ visible = true, opacity = 1, color = "#123abc", mirror = false, selection = {}, deform = false } = {}) => {
+  const pass = ({ visible = true, opacity = 1, color = "#123abc", mirror = false, selection = {} } = {}) => {
     applySceneState(THREE, {
       runtime, meshData: source,
       stepParameterRuntime: { definition: { manifest: {}, module: { update(ctx) {
@@ -1826,12 +1703,7 @@ test("direct viewer effects and clip passes synchronize shared surfaces without 
       animation: { elapsedSec: 0, clip: { id: "pass", label: "Pass", duration: 1, loop: true, tracks: [
         { targets: ["o0"], times: [0], visible: [visible] },
         { targets: ["o0"], times: [0], opacity: [opacity] },
-        { targets: ["o0"], times: [0], pivot: [0, 0, 0], transform: [[4, 2, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0]] },
-        ...(deform ? [{
-          targets: ["o0"], times: [0], maxSegmentLength: 1000,
-          rest: { normal: [0, 0, 1], segments: [{ kind: "line", start: [0, 0, 0], end: [3, 0, 0] }] },
-          tube: [{ path: { normal: [0, 0, 1], segments: [{ kind: "line", start: [0, 0, 2], end: [0, 3, 2] }] }, twistDeg: 0 }]
-        }] : [])
+        { targets: ["o0"], times: [0], pivot: [0, 0, 0], transform: [[4, 2, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0]] }
       ] } }
     });
     for (const item of runtime.displayRecords) applyDisplayRecordTransform(THREE, item);
@@ -1865,14 +1737,6 @@ test("direct viewer effects and clip passes synchronize shared surfaces without 
   assert.equal(set.object.material.clippingPlanes[0].constant, record.material.clippingPlanes[0].constant);
   syncRuntimeStepClipPlane(runtime, { enabled: false });
   assert.equal(set.object.material.clippingPlanes, null);
-
-  record.gpuTubeDeformationAllowed = false;
-  pass({ deform: true });
-  assert.ok(record.tubeDeformationState.active);
-  assert.deepEqual(matrix.elements, zero.elements);
-  assert.equal(record.material.visible, true);
-  pass();
-  assert.deepEqual(matrix.elements, zero.elements, "a previously bent record stays on its private geometry");
   scene.dispose();
   scene.syncSurfaceInstances();
   assert.equal(scene.runtime.cadSurfaceInstanceSets.size, 0, "late external sync cannot revive a disposed scene");
@@ -1988,57 +1852,6 @@ test("shared wireframe geometry is freed only after its last scene, and retained
   replacement.dispose();
   assert.equal(geometryDisposals, 1);
   assert.equal(edgeDisposals, 1);
-});
-
-test("a deformed tube's private edges keep per-class thickness", () => {
-  const sourceMesh = surfComponentMeshData();
-  const meshData = {
-    vertices: new Float32Array(0), indices: new Uint32Array(0),
-    bounds: sourceMesh.bounds,
-    parts: [{ id: "tube", sourceMeshKey: "tube", sourceMesh, vertexCount: 4, triangleCount: 2, bounds: sourceMesh.bounds }]
-  };
-  const scene = buildModel(THREE, meshData, {
-    renderPartsIndividually: true,
-    edgeRendering: { LineSegments2, LineSegmentsGeometry, LineMaterial },
-    appearance: "light"
-  });
-  const record = scene.displayRecords[0];
-  const set = record.edgeInstance.set;
-  assert.equal(set.uniforms.cadClassWidth.value.x, 1, "instanced feature edges take the class width");
-  record.gpuTubeDeformationAllowed = false;
-  const rest = { normal: [0, 0, 1], segments: [{ kind: "line", start: [0, 0, 0], end: [3, 0, 0] }] };
-  const path = { normal: [0, 0, 1], segments: [{ kind: "line", start: [0, 0, 2], end: [0, 3, 2] }] };
-  applyRecordTubeDeformation(THREE, record, normalizeTubeDeformation({ rest, path, maxSegmentLength: 1000 }));
-
-  // The private draw is one screen-space fat line PER DRAWN CLASS, at that
-  // class's width — the thing a single vertex-coloured GL_LINES cannot do.
-  assert.equal(record.edgeInstance, null);
-  assert.equal(record.edges.isGroup, true);
-  assert.deepEqual(record.edges.children.map((line) => line instanceof LineSegments2), [true, true]);
-  assert.deepEqual(record.edgeMaterials.map((material) => material.linewidth), [1, 0.65]);
-  assert.ok(
-    record.edgeMaterials.every((material) => scene.runtime.screenSpaceLineMaterials.has(material)),
-    "both are resolution-synced with the viewport"
-  );
-  applyPartVisualState(THREE, [record], { edgeSettings: scene.runtime.edgeSettings });
-  assert.deepEqual(record.edgeMaterials.map((material) => material.color.getHexString()), ["253443", "667788"], "ordinary visual updates preserve class colours");
-  const privateGeometry = record.edges.children.map((line) => line.geometry);
-  // Deformation moves the fat lines' own endpoint attributes.
-  const bent = record.edges.children[0].geometry.attributes.instanceStart;
-  assert.ok(bent, "screen-space geometry carries instanceStart/instanceEnd");
-  assert.notDeepEqual(Array.from(bent.data.array).slice(0, 3), [0, 0, 0]);
-
-  // Back at rest the private lines stay (see attachCadEdgeInstance: a publish
-  // resets the pose, so rejoining there would rebuild them every publish) and
-  // return to the component's own points at their class widths.
-  applyRecordTubeDeformation(THREE, record, null);
-  assert.equal(record.edges.isGroup, true);
-  assert.deepEqual(record.edgeMaterials.map((material) => material.linewidth), [1, 0.65]);
-  assert.deepEqual(Array.from(record.edges.children[0].geometry.attributes.instanceStart.data.array).slice(0, 3), [0, 0, 0]);
-  scene.update({ appearance: "dark" });
-  assert.deepEqual(record.edges.children.map((line) => line.geometry), privateGeometry);
-  assert.deepEqual(record.edgeMaterials.map((material) => material.color.getHexString()), ["253443", "667788"]);
-  scene.dispose();
 });
 
 test("failed surface-instance disposal retains reachability and retries only unfinished resources", () => {

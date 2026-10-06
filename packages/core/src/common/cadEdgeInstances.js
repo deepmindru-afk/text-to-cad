@@ -17,9 +17,7 @@
 //
 // Highlighted occurrences render in a second pass (a child mesh at the
 // highlight render order) so selection outlines still draw over the
-// highlighted surface; the main pass skips them. A deformed tube leaves its
-// slot and takes a private GL_LINES object (see cadScene.js), because its
-// points move per pose.
+// highlighted surface; the main pass skips them.
 //
 // GPU cost per component: the segment texture (32 B per drawn segment, shared
 // by every occurrence and cached on the component), one instance texture

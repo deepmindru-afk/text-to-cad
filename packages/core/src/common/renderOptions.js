@@ -647,8 +647,7 @@ function closeupSubjectNear(camera, placedObjects, modelGroup) {
     if (!Array.isArray(bounds?.min) || !Array.isArray(bounds?.max)
       || bounds.min.length !== 3 || bounds.max.length !== 3
       || !bounds.min.every(Number.isFinite) || !bounds.max.every(Number.isFinite)
-      || bounds.max.some((value, axis) => value < bounds.min[axis])
-      || record.effectDeformation || record.tubeDeformationState?.active || record.tubeGpuState?.active) return null;
+      || bounds.max.some((value, axis) => value < bounds.min[axis])) return null;
     world.identity();
     if (record.effectMatrix) world.premultiply(record.effectMatrix);
     if (record.explodedViewMatrix) world.premultiply(record.explodedViewMatrix);
@@ -675,11 +674,11 @@ function closeupSubjectNear(camera, placedObjects, modelGroup) {
 
 // A perspective camera's depth step at distance z is about z^2 / (near * 2^24), so it is the
 // near plane, not the far one, that decides whether two close surfaces resolve. A closeup with
-// nothing better to fit on (the camera inside a part's own box, or a routine deforming what the
-// closeup fit measures) would otherwise put near at the 1e-5-radius safety floor and turn every
-// close pair at the pivot into a fight: a flange on its case, a rod in its tube, fins on their
-// barrel. Nothing that near the eye is worth that. Kept at 1/256 of the pivot's depth, the step
-// at the pivot stays under 2e-5 of its depth, and what lies nearer than that would fill the view.
+// nothing better to fit on (the camera inside a part's own box) would otherwise put near at the
+// 1e-5-radius safety floor and turn every close pair at the pivot into a fight: a flange on its
+// case, a rod in its tube, fins on their barrel. Nothing that near the eye is worth that. Kept
+// at 1/256 of the pivot's depth, the step at the pivot stays under 2e-5 of its depth, and what
+// lies nearer than that would fill the view.
 const PIVOT_NEAR_FRACTION = 1 / 256;
 const pivotPoint = new THREE.Vector3();
 

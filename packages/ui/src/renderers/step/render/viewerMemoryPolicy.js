@@ -13,7 +13,6 @@ const VIEWER_MEMORY_CATEGORIES = Object.freeze([
   "selectors",
   "bvh",
   "gpuEstimated",
-  "deformation",
   "assetCaches",
   "workerResidentEstimated",
   "replacementPending",

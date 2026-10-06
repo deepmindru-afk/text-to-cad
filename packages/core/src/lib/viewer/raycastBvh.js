@@ -87,8 +87,6 @@ function intersectsCandidateBounds(mesh, raycaster) {
 }
 
 function raycastWithDemand(raycaster, intersections) {
-  // Deformation must materialize its exact CPU positions/bounds first.
-  if (this.userData?.cadBeforeRaycast?.(raycaster) === false) return;
   const enqueue = raycastDemand.get(this);
   if (enqueue && !this.geometry.boundsTree) {
     if (!intersectsCandidateBounds(this, raycaster)) return;

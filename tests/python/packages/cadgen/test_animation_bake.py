@@ -88,10 +88,6 @@ def _value_at(track: dict, channel: str, t: float):
     return a + (b - a) * (t - times[k]) / (times[k + 1] - times[k])
 
 
-def _line(y: float) -> dict:
-    return {"normal": [0.0, 0.0, 1.0], "segments": [{"kind": "line", "start": [0.0, 0.0, 0.0], "end": [10.0, y, 0.0]}]}
-
-
 class DeclaringClips(unittest.TestCase):
     """``cadgen.clip`` and ``animation=`` refuse a bad declaration before anything builds."""
 
@@ -255,46 +251,6 @@ class BakingStyles(unittest.TestCase):
             [track for track in tracks if "visible" in track],
         )
 
-    def test_a_tube_path_lerps_between_keys_over_a_constant_rest(self) -> None:
-        braid = {"pitch": 2.0, "depth": 0.1, "strands": 8}
-
-        def bend(t, m):
-            m.get("#link").deform_tube(
-                rest=_line(0), path=_line(4 * t), twist_deg=90 * t, max_segment_length=0.5, braid=braid
-            )
-
-        (track,) = _bake("bend", bend, duration=1, fps=10)["tracks"]
-        self.assertEqual(
-            {
-                "targets": ["o1.2.1"],
-                "times": [0.0, 1.0],
-                "tube": [{"path": _line(0), "twistDeg": 0.0}, {"path": _line(4), "twistDeg": 90.0}],
-                "rest": _line(0),
-                "maxSegmentLength": 0.5,
-                "braid": braid,
-            },
-            track,
-        )
-
-        def release(t, m):
-            if t < 0.5:
-                m.get("#link").deform_tube(rest=_line(0), path=_line(4 * t))
-
-        (released,) = _bake("release", release, duration=1, fps=10)["tracks"]
-        self.assertEqual(0.5, released["times"][released["tube"].index(None)])
-        self.assertIsNone(released["tube"][-1])
-
-        def creep(t, m):
-            m.get("#link").deform_tube(rest=_line(t), path=_line(t))
-
-        with self.assertRaises(AnimationError) as caught:
-            _bake("creep", creep, duration=1, fps=10)
-        self.assertEqual(
-            "animation clip 'creep' part o1.2.1: a tube's rest path, max_segment_length and braid "
-            "must stay the same through a clip; only its path and twist move",
-            str(caught.exception),
-        )
-
 
 class ResolvingTargets(unittest.TestCase):
     def test_a_name_an_id_and_a_group_each_resolve_to_leaves(self) -> None:
@@ -354,7 +310,7 @@ class TheBakedSection(unittest.TestCase):
             (lambda s: s["clips"][0].update(duration=0), "clip 'spin' needs a label, a positive duration and a boolean loop"),
             (
                 lambda s: s["clips"][0]["tracks"][0].update(opacity=[1.0, 1.0]),
-                "clip 'spin' track 0 must carry targets, times and exactly one of transform, opacity, visible, tube",
+                "clip 'spin' track 0 must carry targets, times and exactly one of transform, opacity, visible",
             ),
             (
                 lambda s: s["clips"][0]["tracks"][0]["times"].reverse(),

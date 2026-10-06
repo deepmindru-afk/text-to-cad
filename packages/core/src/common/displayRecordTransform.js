@@ -53,7 +53,7 @@ export function applyDisplayRecordTransform(THREE, record) {
   if (record.edgeInstance && !record.edgeInstance.set.disposed) {
     record.edgeInstance.set.setMatrix(record.edgeInstance.slot, combinedMatrix);
   }
-  // Inactive slots must stay zero while their ordinary mesh handles selection,
-  // transparency or deformation. Sync also avoids uploading unchanged matrices.
+  // Inactive slots must stay zero while their ordinary mesh handles selection
+  // or transparency. Sync also avoids uploading unchanged matrices.
   syncCadSurfaceInstanceTransform(record);
 }

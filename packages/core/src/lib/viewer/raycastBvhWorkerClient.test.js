@@ -144,26 +144,6 @@ test("worker acceleration preserves nonindexed geometry and Float64 positions", 
   assert.deepEqual(hits(mesh, ray), expected);
 });
 
-test("deformation guards remain authoritative while a worker is pending", async () => {
-  const { workers, options, events } = fixture();
-  const value = geometry();
-  const mesh = meshOf(value);
-  const ray = new THREE.Raycaster(new THREE.Vector3(0.6, 0.3, 5), new THREE.Vector3(0, 0, -1));
-  scheduleRuntimeRaycastBvh({ displayRecords: [{ mesh }] }, { ...options, deferUntilRaycast: true });
-  assert.equal(hits(mesh, ray)[0].faceIndex, 0);
-  await tick();
-  mesh.userData.cadBeforeRaycast = () => {
-    value.translate(10, 0, 0);
-    value.userData.__bvhSkipped = true;
-    return false;
-  };
-  assert.deepEqual(hits(mesh, ray), []);
-  workers[0].complete();
-  await tick();
-  assert.equal(value.boundsTree, undefined);
-  assert.equal(events[1].bytes, 0);
-});
-
 test("a single FIFO releases its reservation before admitting the next request after worker failure", async () => {
   const { workers, options, events } = fixture();
   const first = geometry(), second = geometry();

@@ -81,8 +81,8 @@ function recordSceneSyncTiming(startedAt, { mode, records, reason = "" }) {
  *
  * It decides reuse or rebuild (`stepScene.plan`): while the build settings hold for the same
  * model, a progressive publish or a detail swap is handed to the live build, which reconciles
- * its records -- occurrences on screen keep their meshes, materials, visual and deformation
- * state and BVHs. It answers the LOD publisher's ownership protocol (`onMeshSourceAdoption`):
+ * its records -- occurrences on screen keep their meshes, materials, visual state and BVHs.
+ * It answers the LOD publisher's ownership protocol (`onMeshSourceAdoption`):
  * every source this scene shows, releases or fails to show is named exactly once. And it
  * rebuilds what hangs off the records: the topology line, the pick groups, the raycast BVH
  * schedule and the section clip.
@@ -212,7 +212,7 @@ export function useStepSceneSync(layers) {
     // for the same model, a new mesh state (a progressive publish, a LOD swap)
     // is handed to the existing scene, which reconciles its records instead of
     // rebuilding them: occurrences already on screen keep their meshes,
-    // materials, visual and deformation state and BVHs.
+    // materials, visual state and BVHs.
     const sceneBuildKey = sceneBuildStructuralKey({
       displayMode: normalizedDisplayMode,
       applyDisplayModeEdgePolicy: !explicitViewPolicy && !topologyDisplayEdgesVisible,

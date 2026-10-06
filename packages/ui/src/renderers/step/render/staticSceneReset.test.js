@@ -80,8 +80,7 @@ test("eligibility excludes merged, non-STEP, active and residual dynamic states"
     { renderFormat: "urdf" }, { renderFormat: "dxf" }, { renderFormat: "glb" },
     { parameters: {} }, { animation: {} }, { exploded: true }, { loading: true },
     ...[{ effectMatrix: {} }, { explodedViewMatrix: {} }, { effectStyle: {} }, { effectVisible: false },
-      { effectHighlighted: true }, { effectDeformation: {} }, { tubeDeformationState: { active: true } },
-      { tubeGpuState: { active: true } }].map(record => ({ records: [record] })),
+      { effectHighlighted: true }].map(record => ({ records: [record] })),
   ]) assert.equal(staticSceneResetEligible({ ...base, ...patch }), false, JSON.stringify(patch));
 });
 
@@ -128,7 +127,7 @@ function syncEdges(runtime, visual, clip) {
     syncClip: active => syncRuntimeStepClipPlane(active, clip) });
 }
 function ordinaryReset(runtime, visual, clip) {
-  resetStepModuleRecordEffects(runtime.displayRecords, THREE);
+  resetStepModuleRecordEffects(runtime.displayRecords);
   runtime.displayRecords.forEach(record => applyDisplayRecordTransform(THREE, record));
   applyPartVisualState(THREE, runtime.displayRecords, visual);
   runtime.cadScene.syncSurfaceInstances(); syncEdges(runtime, visual, clip);

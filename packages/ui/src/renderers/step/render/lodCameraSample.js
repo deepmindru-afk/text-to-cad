@@ -26,8 +26,7 @@ function validBounds(bounds) {
 }
 
 function recordMayMove(record) {
-  return Boolean(record?.effectMatrix || record?.explodedViewMatrix || record?.effectDeformation
-    || record?.tubeDeformationState?.active || record?.tubeGpuState?.active);
+  return Boolean(record?.effectMatrix || record?.explodedViewMatrix);
 }
 
 function invalidMatrix(matrix) {

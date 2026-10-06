@@ -51,7 +51,6 @@ and viewport refinement keeps that boundary.
 - Failed or pending builds keep stock picking. A result must match the
   geometry's attributes, arrays, versions, groups, draw range and live
   ownership; the last geometry release cancels queued or active work.
-- Deformation runs before the bounds test.
 - The merged edge-pick `LineSegments` (`edgePickRaycast.js`) keeps its one
   buffer and gains a table of boxes over contiguous 32-segment runs (and
   1,024-segment groups), built on the first edge ray (O(segments), a tenth of
@@ -99,14 +98,13 @@ accessor rather than reading it.
 ### Instancing and culling
 
 Repeated compatible opaque surfaces share instanced draws and retain
-occurrence identity; mirrors, transparency and deformation use explicit
-fallback paths.
+occurrence identity; mirrors and transparency use explicit fallback paths.
 
 Detail publications retain compatible surface instance sets and their original
 occurrence slots. Only changed membership or render passes replace those sets;
-selected, hidden and deformed occurrences keep inactive slots until eligible
-again. Transform passes reuse each mesh's matrix while observing mutable
-source transforms and effect matrices on every update.
+selected and hidden occurrences keep inactive slots until eligible again.
+Transform passes reuse each mesh's matrix while observing mutable source
+transforms and effect matrices on every update.
 
 Surface instance groups use aggregate frustum bounds, invalidated by instance
 matrix and slot changes. Transformed component boxes and conservative parent

@@ -10,11 +10,6 @@ import {
   normalizeAnimationClips
 } from "./animationRuntime.js";
 import { animationClipList } from "./animationClock.js";
-import { loadTubeDeformation } from "./tubeDeformationChunk.js";
-
-// A tube track needs the lazy tube runtime, which production loads through
-// loadSourceAnimation. These clips are built by hand, so load it here.
-const { normalizeTubeDeformation } = await loadTubeDeformation();
 
 // Keyframes written by hand, the way cadgen bakes them: a transform key is
 // [d, q, d', w], the track's pivot moved by d while the part turns by q about it.
@@ -129,33 +124,11 @@ test("opacity lerps between numbers and holds against null; visibility holds", (
   assert.deepEqual(styles(3.5), {});
 });
 
-test("a tube lerps its path between keys of one shape, and holds across a change of shape", () => {
-  const line = (end) => ({ kind: "line", start: [0, 0, 0], end });
-  const rest = { normal: [0, 0, 1], segments: [line([10, 0, 0])] };
-  const raised = { normal: [0, 0, 1], segments: [line([10, 10, 0])] };
-  const elbow = { normal: [0, 0, 1], segments: [
-    line([5, 0, 0]),
-    { kind: "arc", center: [5, 5, 0], axis: [0, 0, 1], start: [5, 0, 0], sweepDeg: 90 }
-  ] };
-  const flex = clip([{ targets: ["o1.2"], times: [0, 1, 2, 3], rest, maxSegmentLength: 2, tube: [
-    { path: rest, twistDeg: 0 }, { path: raised, twistDeg: 90 }, { path: elbow, twistDeg: 0 }, null
-  ] }]);
-  const tube = (t) => at(flex, t).deformations.get("o1.2");
-  const deformed = (path, twistDeg = 0) => normalizeTubeDeformation({ rest, maxSegmentLength: 2, path, twistDeg });
-  assert.deepEqual(tube(0.5), deformed({ normal: [0, 0, 1], segments: [line([10, 5, 0])] }, 45));
-  // One segment, then two: there is no path between them to lerp, so the first holds.
-  assert.deepEqual(tube(1.5), deformed(raised, 90));
-  assert.deepEqual(tube(2), deformed(elbow));
-  // null is the rest shape: the key before it holds, and past it nothing deforms.
-  assert.deepEqual(tube(2.5), deformed(elbow));
-  assert.equal(tube(3.5), undefined);
-});
-
 function through(matrix, point) {
   return new THREE.Vector3(...point).applyMatrix4(matrix).toArray().map((v) => Math.round(v * 1e6) / 1e6);
 }
 
-const frame = ({ matrices = [], styles = [] } = {}) => ({ matrices: new Map(matrices), styles: new Map(styles), deformations: new Map() });
+const frame = ({ matrices = [], styles = [] } = {}) => ({ matrices: new Map(matrices), styles: new Map(styles) });
 
 test("frame effects premultiply onto an existing pose matrix", () => {
   // Pose put the part at x=10; the clip then orbits the origin by 90deg. The

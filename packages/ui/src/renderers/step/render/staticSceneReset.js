@@ -8,8 +8,7 @@ export function staticSceneResetEligible({ source, renderFormat, parameters, ani
     && Array.isArray(source.parts) && source.parts.length > 0
     && !parameters && !animation && !exploded && !loading
     && !records.some(record => record?.effectMatrix || record?.effectStyle
-      || record?.effectVisible != null || record?.effectHighlighted || record?.explodedViewMatrix
-      || record?.effectDeformation || record?.tubeDeformationState?.active || record?.tubeGpuState?.active);
+      || record?.effectVisible != null || record?.effectHighlighted || record?.explodedViewMatrix);
 }
 
 export function createStaticSceneReset() {

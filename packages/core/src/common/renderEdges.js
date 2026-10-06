@@ -612,8 +612,8 @@ function setLineMaterialVertexColors(material, enabled) {
 
 // A record's edge materials: the GLB-era derived line and the wireframe carry a
 // plain material (its base colour/opacity in userData.cadEdgeBaseColor /
-// cadEdgeBaseOpacity when set). Deformed CAD edges use one such material per
-// class; externally supplied vertex-coloured lines retain their colour arrays.
+// cadEdgeBaseOpacity when set); externally supplied vertex-coloured lines
+// retain their colour arrays.
 // A uniform `opacity`
 // (highlight, dim) overrides every class with `color`; otherwise
 // `opacityScale` scales the class (or base) opacities and `color`, when given,

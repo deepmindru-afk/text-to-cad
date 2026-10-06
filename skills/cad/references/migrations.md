@@ -104,9 +104,8 @@ ANIMATION = {"demo": cadgen.clip(demo, duration=8, loop=False, label="Demo")}
 ```
 
 - `rotate`, `translate`, `opacity` and `visible` keep their names and
-  arguments. `deformTube({rest, path, twistDeg, maxSegmentLength, braid})`
-  becomes `deform_tube(rest=..., path=..., twist_deg=...,
-  max_segment_length=..., braid=...)`; the paths keep their shape.
+  arguments. `deformTube(...)` has no Python form: drop those calls
+  ([tube deformation was removed](#tube-deformation-was-removed-in-08)).
 - Every target starts with `#`: a bare label becomes `"#label"`, an occurrence
   id is `"#o1.3"`, and a comma list becomes one argument per target.
 - A group's name resolves directly and moves every part beneath it, so a group
@@ -119,6 +118,14 @@ ANIMATION = {"demo": cadgen.clip(demo, duration=8, loop=False, label="Demo")}
 Then rebuild the model (`python <model>.py`), which writes a schema-10 sidecar.
 Targets are checked as it builds: a label no part carries fails the build,
 naming the clip and the time.
+
+## Tube deformation was removed in 0.8
+
+cadgen 0.8 has no tube deformation. A clip's handle has no `deform_tube`, a
+JavaScript module's `deformTube(...)` calls have no Python form, and
+`cadgen glb build --animation` takes neither `deform` nor `deformTolerance`.
+Drop those calls and keys when porting: the tube renders as its rigid STEP
+body, and the clip's other tracks play as before.
 
 ## Migration guides
 

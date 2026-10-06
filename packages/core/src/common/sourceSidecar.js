@@ -189,8 +189,8 @@ export function sourceAppearanceGeometry(meshData) {
 // (cadgen/_internal/animation_bake.py writes it and checks it the same way):
 // {clips: [{id, label, duration, loop, tracks}, ...]}, in the order the model
 // declares them. animationRuntime.js says what each channel means.
-const ANIMATION_CHANNELS = ["transform", "opacity", "visible", "tube"];
-const TRACK_EXTRAS = { transform: ["pivot"], tube: ["rest", "maxSegmentLength", "braid"] };
+const ANIMATION_CHANNELS = ["transform", "opacity", "visible"];
+const TRACK_EXTRAS = { transform: ["pivot"] };
 const finite = (value) => typeof value === "number" && Number.isFinite(value);
 
 function animationError(message) {
@@ -220,17 +220,12 @@ function checkTrack(track, where, duration) {
   const valid = {
     transform: (value) => Array.isArray(value) && value.length === 13 && value.every(finite),
     opacity: (value) => value === null || (finite(value) && value >= 0 && value <= 1),
-    visible: (value) => value === null || typeof value === "boolean",
-    tube: (value) => value === null || (isObject(value) && Object.keys(value).length === 2
-      && isObject(value.path) && finite(value.twistDeg))
+    visible: (value) => value === null || typeof value === "boolean"
   }[channel];
   const bad = values.find((value) => !valid(value));
   if (bad !== undefined) throw animationError(`${where} has a malformed ${channel} value: ${JSON.stringify(bad)}`);
   if (channel === "transform" && !(Array.isArray(track.pivot) && track.pivot.length === 3 && track.pivot.every(finite))) {
     throw animationError(`${where} needs its pivot, three numbers`);
-  }
-  if (channel === "tube" && !(isObject(track.rest) && finite(track.maxSegmentLength))) {
-    throw animationError(`${where} needs its rest path and maxSegmentLength`);
   }
 }
 

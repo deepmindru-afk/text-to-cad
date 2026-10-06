@@ -28,6 +28,7 @@ test("a pass that only recolours, highlights or re-renders its records changes n
 });
 
 test("moving, hiding, or taking a record out of the shadow pass is a change", () => {
+  assert.equal(shadowCastersChanged(null, [record("a")]), true, "nothing to compare against");
   const cases = [
     (records) => records[0].mesh.matrix.makeTranslation(0, 0, 1e-9),
     (records) => { records[1].mesh.visible = false; },
@@ -44,34 +45,4 @@ test("moving, hiding, or taking a record out of the shadow pass is a change", ()
     change(records);
     assert.equal(shadowCastersChanged(before, records), true, String(change));
   }
-});
-
-test("a tube bend counts only when it changed: re-bent, straightened, or not yet carried", () => {
-  const records = [record("a"), record("b")];
-  assert.equal(shadowCastersChanged(null, records), true, "nothing to compare against");
-  // What `applyRecordTubeDeformation` leaves: an active state and the spec it was bent to.
-  const spec = { pathSpec: [0, 1] };
-  records[1].effectDeformation = spec;
-  records[1].tubeDeformationState = { active: true, lastSpec: spec };
-  let before = captureShadowCasters(records);
-  // The same bend applied again (a hover re-ran the pose pass): the state keeps its spec.
-  records[1].effectDeformation = { pathSpec: [0, 1] };
-  assert.equal(shadowCastersChanged(before, records), false);
-  // Bent to a new spec: the state takes it.
-  records[1].tubeDeformationState.lastSpec = records[1].effectDeformation = { pathSpec: [0, 2] };
-  assert.equal(shadowCastersChanged(before, records), true);
-  before = captureShadowCasters(records);
-  records[1].tubeDeformationState.active = false;
-  records[1].effectDeformation = null;
-  assert.equal(shadowCastersChanged(before, records), true, "straightened back to rest");
-  // A bend asked for that no active state carries cannot be vouched for: not before a pass...
-  records[1].effectDeformation = spec;
-  before = captureShadowCasters(records);
-  records[1].effectDeformation = null;
-  assert.equal(shadowCastersChanged(before, records), true);
-  // ...nor after it.
-  before = captureShadowCasters(records);
-  assert.equal(shadowCastersChanged(before, records), false, "a straight record");
-  records[1].effectDeformation = spec;
-  assert.equal(shadowCastersChanged(before, records), true);
 });

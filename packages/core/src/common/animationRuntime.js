@@ -1,5 +1,4 @@
 import { atan2, cos, sin } from "../lib/surf/trig.js";
-import { loadTubeDeformation, requireTubeDeformation } from "./tubeDeformationChunk.js";
 import { normalizeSourceAnimation } from "./sourceSidecar.js";
 
 // The choreography half: play the clips a document's sidecar carries. A clip is
@@ -21,9 +20,6 @@ import { normalizeSourceAnimation } from "./sourceSidecar.js";
 //              curves: a constant spin is exact.
 //   opacity    0..1, or null for the material's own; lerps between numbers.
 //   visible    true, false, or null for the rest state; held.
-//   tube       {path, twistDeg}, or null for the rest shape; the path's numbers
-//              lerp while its segment kinds match, and hold otherwise. The track
-//              carries the tube's rest path, maxSegmentLength and braid.
 // Every evaluation starts from rest: a clip is a pure function of t, so scrub,
 // loop and seek are free.
 
@@ -46,19 +42,12 @@ export function isAnimationClip(clip) {
   return Array.isArray(clip?.tracks);
 }
 
-/** Load a sidecar's clips: `{clips}`, or null when it declares none. A clip that
- * bends a tube needs the lazy tube runtime, so this waits for it once, here,
- * and evaluation stays synchronous. */
+/** Load a sidecar's clips: `{clips}`, or null when it declares none. */
 export async function loadSourceAnimation(sidecar, { signal } = {}) {
   signal?.throwIfAborted();
   const animation = normalizeSourceAnimation(sidecar?.animation);
   if (!animation) return null;
-  const clips = normalizeAnimationClips(animation);
-  if (Object.values(clips).some((clip) => clip.tracks.some((track) => track.tube))) {
-    await loadTubeDeformation();
-    signal?.throwIfAborted();
-  }
-  return { clips };
+  return { clips: normalizeAnimationClips(animation) };
 }
 
 // (index of the key at or before t, fraction of the way to the next key)
@@ -150,60 +139,15 @@ function transformAt(THREE, track, index, u) {
 }
 
 const lerp = (a, b, u) => a + (b - a) * u;
-const lerp3 = (a, b, u) => [lerp(a[0], b[0], u), lerp(a[1], b[1], u), lerp(a[2], b[2], u)];
 
-function samePathShape(a, b) {
-  return a.segments.length === b.segments.length
-    && a.segments.every((segment, index) => segment.kind === b.segments[index].kind);
-}
-
-function lerpPath(a, b, u) {
-  return {
-    normal: lerp3(a.normal, b.normal, u),
-    segments: a.segments.map((segment, index) => {
-      const other = b.segments[index];
-      const out = { kind: segment.kind };
-      for (const [key, value] of Object.entries(segment)) {
-        if (key === "kind") continue;
-        out[key] = typeof value === "number" ? lerp(value, other[key], u)
-          : Array.isArray(value[0]) ? value.map((point, n) => lerp3(point, other[key][n], u))
-            : lerp3(value, other[key], u);
-      }
-      return out;
-    })
-  };
-}
-
-// A held key's deformation, normalized once: a tube that rests between moves
-// (a valve spring, most of an engine cycle) costs nothing per frame.
-const heldTubes = new WeakMap();
-
-function tubeAt(track, index, u) {
-  const a = track.tube[index];
-  if (!a) return null;
-  const b = u > 0 ? track.tube[index + 1] : null;
-  const runtime = requireTubeDeformation("a tube animation track");
-  const spec = { rest: track.rest, maxSegmentLength: track.maxSegmentLength, ...(track.braid ? { braid: track.braid } : {}) };
-  if (!b || !samePathShape(a.path, b.path)) {
-    let held = heldTubes.get(a);
-    if (!held) {
-      held = runtime.normalizeTubeDeformation({ ...spec, path: a.path, twistDeg: a.twistDeg });
-      heldTubes.set(a, held);
-    }
-    return held;
-  }
-  return runtime.normalizeTubeDeformation({ ...spec, path: lerpPath(a.path, b.path, u), twistDeg: lerp(a.twistDeg, b.twistDeg, u) });
-}
-
-/** Evaluate one clip at time t: `{matrices, styles, deformations}`, each keyed by
- * occurrence id. A looping clip wraps t; one that does not holds its end. */
+/** Evaluate one clip at time t: `{matrices, styles}`, each keyed by occurrence
+ * id. A looping clip wraps t; one that does not holds its end. */
 export function evaluateAnimationClip(THREE, clip, t) {
   const duration = clip.duration || 1;
   let localT = Math.max(0, Number(t) || 0);
   localT = clip.loop !== false ? localT % duration : Math.min(localT, duration);
   const matrices = new Map();
   const styles = new Map();
-  const deformations = new Map();
   const style = (id, key, value) => {
     const current = styles.get(id) || {};
     current[key] = value;
@@ -224,13 +168,9 @@ export function evaluateAnimationClip(THREE, clip, t) {
       const value = track.visible[index];
       if (value === null) continue;
       for (const id of track.targets) style(id, "visible", value);
-    } else if (track.tube) {
-      const deformation = tubeAt(track, index, u);
-      if (!deformation) continue;
-      for (const id of track.targets) deformations.set(id, deformation);
     }
   }
-  return { matrices, styles, deformations };
+  return { matrices, styles };
 }
 
 // Merge an evaluated frame into the viewer's per-part effect records — the same
@@ -268,10 +208,6 @@ export function applyAnimationFrameToEffects(THREE, effectsByPartId, frame) {
       ? new THREE.Matrix4().multiplyMatrices(matrix, effect.matrix)
       : matrix.clone();
     transformCount += 1;
-  }
-  for (const [partId, deformation] of frame.deformations || []) {
-    const effect = ensureEffect(partId);
-    if (effect) { effect.deformation = deformation; transformCount += 1; }
   }
   for (const [partId, style] of frame.styles || []) {
     const effect = ensureEffect(partId);

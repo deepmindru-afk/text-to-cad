@@ -89,8 +89,7 @@ export function renderMemoryAccounting(runtime) {
     faceIdBytes: 0,
     faceIdArrays: 0,
     pickBytes: 0,
-    pickGeometries: 0,
-    deformationBytes: 0
+    pickGeometries: 0
   };
   const visit = (object, kind) => {
     const geometry = object?.geometry;
@@ -241,32 +240,6 @@ export function renderMemoryAccounting(runtime) {
       visitPick(root);
     }
   }
-  // Tube deformation retains a refined rest mesh/mapping beside the posed
-  // display geometry. Count typed arrays reachable from its private state that
-  // were not already attributed to a visible geometry.
-  const seenDeformationObjects = new Set();
-  const visitDeformation = (value) => {
-    if (!value || typeof value !== "object" || seenDeformationObjects.has(value)) return;
-    seenDeformationObjects.add(value);
-    if (ArrayBuffer.isView(value)) {
-      if (!seenArrayBuffers.has(value.buffer)) {
-        seenArrayBuffers.add(value.buffer);
-        // A subview keeps the entire allocation alive. This matches the cache
-        // accounting and prevents packed deformation state from looking free.
-        totals.deformationBytes += value.buffer.byteLength;
-      }
-      return;
-    }
-    if (value instanceof ArrayBuffer) {
-      if (!seenArrayBuffers.has(value)) {
-        seenArrayBuffers.add(value);
-        totals.deformationBytes += value.byteLength;
-      }
-      return;
-    }
-    for (const child of Object.values(value)) visitDeformation(child);
-  };
-  for (const record of records) visitDeformation(record?.tubeDeformationState);
   totals.geometries = seenGeometries.size;
   totals.buffers = seenBuffers.size;
   totals.materials = seenMaterials.size;
@@ -279,7 +252,6 @@ export function renderMemoryAccounting(runtime) {
   viewerMemoryPolicy.setRetained("displayCpu", displayCpuBytes);
   viewerMemoryPolicy.setRetained("gpuEstimated", gpuEstimatedBytes);
   viewerMemoryPolicy.setRetained("bvh", totals.bvhBytes);
-  viewerMemoryPolicy.setRetained("deformation", totals.deformationBytes);
   syncSelectorCacheAccounting(viewerMemoryPolicy, Number(additionalAssetCaches.selector?.typedBytes) || 0, selectorCpuBytes);
   viewerMemoryPolicy.setRetained("assetCaches", Object.entries(additionalAssetCaches).reduce(
     (sum, [name, stats]) => name === "surfLeash" || name === "selector"

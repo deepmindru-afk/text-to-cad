@@ -89,12 +89,10 @@ in [the drawing contract](../ui/docs/drawing.md); the mechanism is
   (`animationRuntime.js`) interpolates the keyframes in `sidecar.animation`,
   `{clips: [{id, label, duration, loop, tracks}, ...]}`, which cadgen bakes
   from the model's Python clips when it builds. Each track drives one channel
-  (transform, opacity, visible or tube) of the document occurrence ids it
+  (transform, opacity or visible) of the document occurrence ids it
   lists; an evaluation is a pure function of t, so scrub, loop and seek are
   free. It runs no model code and resolves no names. Neither half references
-  the other; they meet only in the effect records. Flexible swept bodies use
-  [tube deformation](docs/tube-deformation.md), deforming the original STEP
-  tessellation through analytic centerlines in that same shared effects pass.
+  the other; they meet only in the effect records.
 - **One scene builder per file family, two callers**: a GLB, an STL or 3MF, and a
   robot description (URDF, SRDF, SDF) are each drawn by ONE builder here
   (`lib/render/glbScene.js`, `lib/render/meshScene.js`, `lib/urdf/robotScene.js`, over
@@ -182,7 +180,6 @@ Where the mechanism is written:
 |---|---|
 | [docs/render-pipeline.md](docs/render-pipeline.md) | The staged pipeline (`loadSource` → `buildModel` → `renderModel` → `captureModel`), the unified display state, the two lighting recipes, the photographic rig, display modes, CAD edges and per-component geometry sharing |
 | [docs/resource-ownership.md](docs/resource-ownership.md) | Ownership and disposal, the selector/BVH demand boundary, recomposition and instancing reuse, the tessellation worker pool, mesh-cache admission |
-| [docs/tube-deformation.md](docs/tube-deformation.md) | Deforming a swept body's original STEP tessellation through analytic centerlines |
 
 ## Public modules and lifetimes
 

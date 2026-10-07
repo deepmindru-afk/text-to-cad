@@ -115,20 +115,22 @@ async function loadStepAnimation(job, source) {
   return resolveAnimationFrame(animation.clips, request);
 }
 
-// Everything a render needs before a single pixel is drawn: the fetched and
-// tessellated source, the compiled clip frame, and the job carrying the runtime
+// Everything a render needs before a single pixel is drawn: the fetched
+// source and its meshes, the compiled clip frame, and the job carrying the runtime
 // objects the shared render path reads. A still pays for this once and throws it
 // away; a video pays for it once and keeps it (see prepareHeadlessRenderSequence).
 async function prepareRenderJob(job) {
   const loadStarted = performance.now();
   const stageTimings = {};
   const assetOrigin = String(globalThis.window?.__cadgenSnapshotAssetOrigin || "").replace(/\/+$/, "");
-  const tessellationCache = createTessellationCache({ provider: createHttpTessellationCacheProvider({ origin: assetOrigin }) });
+  // The snapshot host meshes on request what its store lacks (/__tess_cache/produce).
+  const tessellationCache = createTessellationCache({ provider: createHttpTessellationCacheProvider({
+    origin: assetOrigin, produceUrl: `${assetOrigin}/__tess_cache/produce`,
+  }) });
   let source;
   try {
     source = await loadSource(job, { stageTimings, tessellationCache, resources: createHttpCadResourceProvider({ origin: assetOrigin, cache: "no-store" }) });
   } finally {
-    await tessellationCache.flushTessellationCacheWriteBacks();
     tessellationCache.dispose();
   }
   stageTimings.loadSourceMs = Math.round(performance.now() - loadStarted);
@@ -355,25 +357,18 @@ if (typeof window !== "undefined") {
   window.__snapshotRenderSequence = prepareHeadlessRenderSequence;
   window.__snapshotRenderSequenceFrame = captureHeadlessRenderSequenceFrame;
   window.__snapshotRenderSequenceDispose = disposeHeadlessRenderSequence;
-  // The snapshot host (cadgen's snapshot driver) serves the shared component-
-  // tessellation object/index store on /__tess_cache/ from its
-  // loopback asset server, so repeat snapshots — and any component an export
-  // already tessellated — skip tessellation entirely, and a snapshot miss
-  // warms the cache for later exports. Both directions are best-effort: a
-  // host without the route (404) or a disabled cache degrades to plain
-  // in-page tessellation.
+  // The snapshot host (cadgen's snapshot driver) serves the store's component
+  // meshes on /__tess_cache/ from its loopback asset server, and meshes on
+  // request (POST /__tess_cache/produce) any the store lacks: the page draws
+  // what cadgen made and never tessellates.
   //
   // That server is addressed by its ABSOLUTE origin, injected before this
   // bundle runs. A page-relative /__tess_cache/ URL is intercepted by the
-  // host's Playwright route first, and interception hands the whole POST body
-  // to the driver as escaped text in one protocol message — a 92 MB write-back
-  // exceeded Node's string limit there and killed the renderer. Redirecting
-  // the request to loopback could not save it: the body had already crossed
-  // the pipe. The host raises when it cannot start the server, so the origin
-  // is always here; a build talking to some other host degrades to relative
-  // URLs and says so.
-  // The shared fetch-backed provider: single-entry GET/POST plus the batched
-  // POST /__tess_cache/batch — bounded round trips for a whole assembly's hit set.
+  // host's Playwright route first, and interception hands a whole response
+  // body to the driver as escaped text in one protocol message, which a large
+  // assembly's batch exceeds. The host raises when it cannot start the server,
+  // so the origin is always here; a build talking to some other host degrades
+  // to relative URLs and says so.
   const assetOrigin = String(window.__cadgenSnapshotAssetOrigin || "").replace(/\/+$/, "");
   if (!assetOrigin) {
     console.warn("snapshot asset origin missing: bulk cache transfers fall back to the host's route");

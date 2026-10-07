@@ -1,17 +1,13 @@
+/** The tolerances a stored mesh is keyed by: chord relative to the component's diagonal, angle in radians. */
 export interface TessellationOptions {
   chordTolerance?: number;
   angleTolerance?: number;
-  collectBoundaryDebug?: boolean;
-  noSharedBoundaries?: boolean;
-  noConformPass?: boolean;
-  [key: string]: unknown;
 }
 export interface TessellatedComponent {
   positions: Float32Array;
   normals: Float32Array;
   faceOrds: Float32Array;
   indices: Uint32Array;
-  sideOrds: Uint32Array;
   faceRanges: { ord: number; color: number[] | null; indexStart: number; indexCount: number }[];
   edges: { ord: number; visibilityClass?: string | null; polyline: Float32Array }[];
   bounds: { min: number[]; max: number[] };
@@ -51,7 +47,8 @@ export interface TessellationCacheProvider {
   probeMany(keys: string[], options?: { signal?: AbortSignal }): Promise<(TessellationProbe | null)[] | null>;
   getProbed(probe: TessellationProbe, options?: { signal?: AbortSignal; maxBytes?: number }): Promise<Uint8Array | null>;
   getManyProbed?(probes: TessellationProbe[], options?: { signal?: AbortSignal; maxBytes?: number }): Promise<(Uint8Array | null)[] | null>;
-  put?(key: string, bytes: Uint8Array, options?: { signal?: AbortSignal }): Promise<unknown>;
+  /** Mesh what the keys name and answer as a probe would; only a host that meshes on request offers it. */
+  produceMany?(keys: string[], options?: { signal?: AbortSignal }): Promise<(TessellationProbe | null)[] | null>;
   /** The most framed bytes its transport carries in one batched read (`tessBatchMaxBytes`). */
   readonly maxBatchBytes?: number;
 }
@@ -61,21 +58,14 @@ export interface TessellationCache {
    * lower ceiling its provider's transport declares (`tessBatchMaxBytes`).
    */
   readonly batchMaxBytes?: number;
-  /** Borrow a cancellable view; admitted write-backs remain owned by the parent cache. */
+  /** Borrow a cancellable view of this cache's reads. */
   createSession(options?: { signal?: AbortSignal }): TessellationCache;
   tessellationCacheProviderRegistered(): boolean;
   probeCachedTessellationEntries(surfaceInputs: string[], options?: TessellationOptions, request?: TessellationReadOptions): Promise<Map<string, TessellationProbe>>;
+  /** Ask the host to mesh the inputs a probe found missing; empty where the host cannot. */
+  produceTessellationEntries(surfaceInputs: string[], options?: TessellationOptions, request?: TessellationReadOptions): Promise<Map<string, TessellationProbe>>;
   getCachedComponentEntry(surfaceInput: string, options?: TessellationOptions, request?: TessellationReadOptions): Promise<TessellationCacheEntry | null>;
   getCachedEntryBytes(surfaceInput: string, options?: TessellationOptions, request?: TessellationReadOptions): Promise<Uint8Array | null>;
   getCachedEntryBytesMany(probes: TessellationProbe[], request?: { signal?: AbortSignal; maxBytes?: number }): Promise<(Uint8Array | null)[] | null>;
-  /**
-   * Deferred write-backs: a batch is written once the load is quiet for `deferMs`, no later than
-   * `maxWaitMs` after its first entry, and at once when it reaches `maxPendingBytes`.
-   */
-  configureTessellationCacheWriteBack(options?: { deferMs?: number; maxWaitMs?: number; concurrency?: number; maxPendingBytes?: number }): void;
-  flushTessellationCacheWriteBacks(): Promise<void>;
-  writeBackEntryBytes(surfaceInput: string, options: TessellationOptions, bytes: Uint8Array): Promise<unknown>;
-  writeBackComponentEntry(surfaceInput: string, surfaceObject: string, options: TessellationOptions, component: TessellatedComponent, index: unknown): Promise<unknown>;
-  memoryStats(): { pendingWriteBackBytes: number; activeWriteBackBytes: number; writeBackBytes: number };
   dispose(): void;
 }

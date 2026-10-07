@@ -101,6 +101,31 @@ class SurfaceRequests(unittest.TestCase):
         self.assertEqual(future.detached, 1)
         self.assertFalse(self.manager._jobs)
 
+    def test_a_named_tessellation_is_ready_only_with_its_mesh_and_the_row_carries_it(self):
+        from cadgen.store import meshes
+
+        tessellation = {"chordTolerance": 5e-4, "angleTolerance": 0.35}
+        request = {**self.request, "tessellation": tessellation}
+        surfaces.derive(self.tree)
+        future = SubscriberFuture()
+        with mock.patch("cadgen.daemon.artifacts.submit_artifact", return_value=future) as submit:
+            pending = self.resolve(request)
+            self.assertEqual(pending["components"][self.cid]["state"], "pending",
+                             "a stored surface without its mesh is not ready")
+            [operation] = [call.args[0] for call in submit.call_args_list]
+            self.assertEqual(operation["tessellations"], [tessellation], "the job meshes the named tessellation")
+            surfaces.derive(self.tree, tessellations=operation["tessellations"])
+            future.set_result({})
+            ready = self.resolve({**request, "job": pending["job"]})["components"][self.cid]
+        key = meshes.tessellation_key(self.entry["surfaceInput"], 5e-4, 0.35)
+        self.assertEqual(ready["state"], "ready")
+        self.assertEqual(ready["mesh"], meshes.probe(key), "the row is the mesh's probe row")
+        with mock.patch("cadgen.daemon.artifacts.submit_artifact", side_effect=AssertionError("unexpected job")):
+            self.assertEqual(self.resolve(request)["components"][self.cid]["mesh"], ready["mesh"])
+        for bad in ({"chordTolerance": 5e-4}, {"chordTolerance": 1e-9, "angleTolerance": 0.35}, "fine"):
+            with self.subTest(tessellation=bad), self.assertRaises(ValueError):
+                self.resolve({**self.request, "tessellation": bad})
+
     def test_completion_racing_first_lookup_still_returns_ready(self):
         future = SubscriberFuture()
         def submit(*args, **kwargs):

@@ -15,29 +15,17 @@ import {
 import { SOURCE_SIDECAR_SCHEMA_VERSION } from "./sourceSidecar.js";
 import { renderAssetSourceScope } from "../lib/renderAssetSourceScope.js";
 import {
-  createTessellationCache, tessellationPayloadFacts, validateTessellationProbeRow,
-  createHttpTessellationCacheProvider, encodeTessellationCacheBatch, encodeComponentTessellation,
+  createTessellationCache, createHttpTessellationCacheProvider, encodeTessellationCacheBatch,
   tessellationCacheKey,
 } from "../lib/surf/tessellationCache.js";
+import { encodeTessFixture, memoryMeshProvider, meshFixture, probeRowFor, surfFixture } from "../lib/surf/__tests__/meshFixtures.js";
 
-function memoryTessellationProvider(requested = []) {
-  const rows = new Map();
-  const bodies = new Map();
-  return {
-    async probeMany(keys) {
-      requested.push(...keys);
-      return keys.map((key) => rows.get(key) || null);
-    },
-    async getProbed(row) { return bodies.get(row.object) || null; },
-    async getManyProbed(probes) { return probes.map((row) => bodies.get(row.object) || null); },
-    async put(key, bytes) {
-      const facts = tessellationPayloadFacts(bytes, { tessellationInput: key });
-      const object = createHash("sha256").update(bytes).digest("hex");
-      rows.set(key, validateTessellationProbeRow({ schemaVersion: 1, object, ...facts }));
-      bodies.set(object, bytes);
-      return true;
-    },
-  };
+// A host's mesh store that records every key probed, and meshes on request what `produce` holds.
+function recordingMeshStore(requested = [], { stored = [], produce = [] } = {}) {
+  const store = memoryMeshProvider(stored, { produce });
+  const probeMany = store.probeMany;
+  store.probeMany = async (keys) => { requested.push(...keys); return probeMany(keys); };
+  return store;
 }
 
 // Composition coverage for the scoping of render asset caches.
@@ -138,53 +126,80 @@ test("snapshot quality selects bounded shared tessellation policy", () => {
   }), /quality/i);
 });
 
-test("macro tessellation changes the rendered surface and uses its own cache entry", async (t) => {
-  const bytes = fs.readFileSync(new URL("../lib/surf/fixtures/cam_follower_roller.surf", import.meta.url));
-  const oldFetch = globalThis.fetch;
-  let fetches = 0;
-  globalThis.fetch = async () => { fetches += 1; return new Response(bytes); };
-  const requested = [];
-  setTessellationCacheProvider(memoryTessellationProvider(requested));
-  t.after(() => { globalThis.fetch = oldFetch; setTessellationCacheProvider(null); });
-  const base = { kind: "step", package: {
-    descriptor: { components: { roller: {
-      surfaceInput: "d".repeat(64),
-      surfaceObject: createHash("sha256").update(bytes).digest("hex"),
-    } },
+// The roller as a one-component package, bound to its fixture identity.
+function rollerPackage(extra = {}) {
+  const { surfaceInput, surfaceObject } = surfFixture("cam_follower_roller");
+  return { kind: "step", package: {
+    descriptor: { components: { roller: { surfaceInput, surfaceObject } },
       occurrences: [{ id: "o1.1", name: "roller", component: "roller" }],
       assembly: { root: { id: "o1", name: "macro", nodeType: "assembly", children: [
         { id: "o1.1", name: "roller", nodeType: "part", children: [] }
       ] } } },
-    componentUrls: { roller: "/macro-fixture/roller.surf" }
+    componentUrls: { roller: "/macro-fixture/roller.surf" },
+    ...extra,
   } };
+}
+
+test("a package's missing meshes are asked of the host once, then read as stored ones", async (t) => {
+  const oldFetch = globalThis.fetch;
+  let fetches = 0;
+  globalThis.fetch = async () => { fetches += 1; return new Response(null, { status: 404 }); };
+  const requested = [];
+  const store = recordingMeshStore(requested, {
+    produce: [meshFixture("cam_follower_roller", 1).bytes, meshFixture("cam_follower_roller", 0).bytes],
+  });
+  setTessellationCacheProvider(store);
+  t.after(() => { globalThis.fetch = oldFetch; setTessellationCacheProvider(null); });
   const coldStages = {};
-  const coarse = await loadSource(base, { stageTimings: coldStages });
-  assert.equal(coldStages.sourceLoad.cacheHitCount, 0);
-  assert.equal(coldStages.sourceLoad.cacheMissCount, 1);
-  for (const stage of ["surfaceReadMs", "tessellateMs", "cacheWriteMs", "meshBuildMs"]) {
+  const canonical = await loadSource(rollerPackage(), { stageTimings: coldStages });
+  assert.equal(coldStages.sourceLoad.producedCount, 1, "the default tier was meshed on request");
+  assert.equal(coldStages.sourceLoad.cacheHitCount, 1);
+  assert.equal(coldStages.sourceLoad.cacheMissCount, 0);
+  for (const stage of ["probeMs", "produceMs", "cacheReadMs", "meshBuildMs"]) {
     assert.ok(coldStages.sourceLoad[stage] >= 0, stage);
   }
-  // Finer than the tessellator's own defaults (1.5e-3 chord / 0.35 rad) by enough
-  // that the mesh must visibly densify, and no finer. The property under test is
-  // "an explicit macro request re-tessellates and keys its own cache entry", which
-  // 1e-3/0.1 proves exactly as well as the floor does — at 1/10th the work. Asking
-  // for 1e-4/0.025 here built a 1.7M-index mesh and cost ~4.5 s, which was the
-  // whole @text-to-cad/core suite's critical path.
-  const fineJob = { ...base, quality: { tessellation: { chordTolerance: .001, angleTolerance: .1 } } };
-  const fine = await loadSource(fineJob);
-  assert.ok(fine.meshData.indices.length > coarse.meshData.indices.length);
+  // An explicit macro tessellation reads its own mesh, keyed by its own tolerances.
+  const coarseJob = { ...rollerPackage(), quality: { tessellation: { chordTolerance: 2e-3, angleTolerance: 1.4 } } };
+  const coarse = await loadSource(coarseJob);
+  assert.ok(coarse.meshData.indices.length < canonical.meshData.indices.length);
   assert.notEqual(requested[0], requested[1]);
-  const beforeWarm = fetches;
-  const warm = await loadSource(fineJob);
-  assert.equal(fetches, beforeWarm, "fine cache hit must not fetch or retessellate the source");
-  assert.equal(warm.meshData.indices.length, fine.meshData.indices.length);
+  assert.equal(store.counts.produced, 2);
+  const warmStages = {};
+  const warm = await loadSource(coarseJob, { stageTimings: warmStages });
+  assert.equal(warmStages.sourceLoad.producedCount, undefined, "a stored mesh is asked for nothing");
+  assert.equal(store.counts.produced, 2);
+  assert.equal(warm.meshData.indices.length, coarse.meshData.indices.length);
+  assert.equal(fetches, 0, "no SURF is read to draw a package");
+});
+
+test("a static package reads each component's own mesh file; a component nothing meshed is an error", async (t) => {
+  const oldFetch = globalThis.fetch;
+  const mesh = meshFixture("cam_follower_roller", 1);
+  const fetched = [];
+  globalThis.fetch = async (url) => {
+    fetched.push(String(url));
+    return String(url).endsWith("/roller.tess")
+      ? new Response(mesh.bytes.slice(), { status: 200 })
+      : new Response(null, { status: 404 });
+  };
+  t.after(() => { globalThis.fetch = oldFetch; setTessellationCacheProvider(null); });
+  // The docs hero: no mesh store at all, a mesh beside each surf.
+  setTessellationCacheProvider(null);
+  const job = rollerPackage({ meshUrls: { roller: "/hero/components/roller.tess" } });
+  const source = await loadSource(job);
+  assert.ok(source.meshData.indices.length > 0);
+  assert.deepEqual(fetched, ["/hero/components/roller.tess"], "only the mesh file is read");
+  // A mesh at another tessellation is not this component's mesh at that tessellation.
+  await assert.rejects(loadSource({ ...job, quality: { tessellation: { chordTolerance: 2e-3, angleTolerance: 1.4 } } }),
+    /is not its mesh at this tessellation/);
+  await assert.rejects(loadSource(rollerPackage()), /cadgen meshes every component before a page draws it/);
 });
 
 const WARM_COMPONENT = {
   positions: new Float32Array([0, 0, 0, 2, 0, 0, 0, 3, 0]),
   normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
   faceOrds: new Float32Array([1, 1, 1]),
-  indices: new Uint32Array([0, 1, 2]), sideOrds: new Uint32Array([1, 2, 3]),
+  indices: new Uint32Array([0, 1, 2]),
   faceRanges: [{ ord: 1, indexStart: 0, indexCount: 3 }], edges: [],
   bounds: { min: [0, 0, 0], max: [2, 3, 0] }, scale: Math.sqrt(13),
 };
@@ -198,12 +213,8 @@ async function loadWarmPackage(t, count, providerOptions = {}) {
   for (let n = 0; n < count; n += 1) {
     const cid = `c${n}`, surfaceInput = createHash("sha256").update(cid).digest("hex");
     const key = tessellationCacheKey(surfaceInput);
-    const body = encodeComponentTessellation(component, {
-      surfaceInput, surfaceObject, partColor: null, edgeClasses: [],
-    });
-    const object = createHash("sha256").update(body).digest("hex");
-    rows[key] = validateTessellationProbeRow({ schemaVersion: 1, object, ...tessellationPayloadFacts(body) });
-    assert.ok(rows[key]);
+    const body = encodeTessFixture(component, { surfaceInput, surfaceObject, edgeClasses: [] });
+    rows[key] = probeRowFor(body);
     bodies[key] = body;
     components[cid] = { surfaceInput, surfaceObject };
     componentUrls[cid] = `/never-fetch/${cid}.surf`;
@@ -266,17 +277,12 @@ test("a warm package's batches stay within the ceiling its cache's transport dec
 });
 
 test("snapshot package appearance composes through the shared source resolver", async (t) => {
-  const bytes = fs.readFileSync(new URL("../lib/surf/fixtures/cam_follower_roller.surf", import.meta.url));
-  const oldFetch = globalThis.fetch;
-  globalThis.fetch = async () => new Response(bytes);
-  setTessellationCacheProvider(memoryTessellationProvider());
-  t.after(() => { globalThis.fetch = oldFetch; setTessellationCacheProvider(null); });
+  const { surfaceInput, surfaceObject } = surfFixture("cam_follower_roller");
+  setTessellationCacheProvider(memoryMeshProvider([meshFixture("cam_follower_roller", 1).bytes]));
+  t.after(() => { setTessellationCacheProvider(null); });
   const descriptor = {
     kind: "assembly-package",
-    components: { "appearance-cid": {
-      surfaceInput: "e".repeat(64),
-      surfaceObject: createHash("sha256").update(bytes).digest("hex"),
-    } },
+    components: { "appearance-cid": { surfaceInput, surfaceObject } },
     occurrences: [{ id: "o1.1", name: "roller", component: "appearance-cid" }],
     assembly: { root: { id: "o1", name: "appearance", nodeType: "assembly", children: [
       { id: "o1.1", name: "roller", nodeType: "part", children: [] }

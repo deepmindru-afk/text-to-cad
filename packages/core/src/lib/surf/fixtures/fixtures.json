@@ -1,0 +1,56 @@
+{
+  "cam_follower_roller": {
+    "edges": 14,
+    "faces": 8,
+    "meshes": {
+      "0": {
+        "angleTolerance": 1.4,
+        "byteLength": 56940,
+        "chordTolerance": 0.002
+      },
+      "1": {
+        "angleTolerance": 0.35,
+        "byteLength": 117404,
+        "chordTolerance": 0.0015
+      }
+    },
+    "surfaceInput": "9fc4601477c829cf5fc58726516e611e0faf59768b8af023a35fa6738d38aff9",
+    "surfaceObject": "f28f57f4ac5ea245ae278d53c58e5d0449a483c277d49334787a9d3ee5105140"
+  },
+  "mixed": {
+    "edges": 35,
+    "faces": 16,
+    "meshes": {
+      "0": {
+        "angleTolerance": 1.4,
+        "byteLength": 50556,
+        "chordTolerance": 0.002
+      },
+      "1": {
+        "angleTolerance": 0.35,
+        "byteLength": 79824,
+        "chordTolerance": 0.0015
+      }
+    },
+    "surfaceInput": "93be8b4655848b09033ef6127725bfd5560431c8ef97fec555b0b832ba51ac5c",
+    "surfaceObject": "ff62c76102d7051afc64acb8f8b1d58bbee51155c151fa243ba1efb8c5765605"
+  },
+  "sun_gear": {
+    "edges": 291,
+    "faces": 99,
+    "meshes": {
+      "0": {
+        "angleTolerance": 1.4,
+        "byteLength": 56380,
+        "chordTolerance": 0.002
+      },
+      "1": {
+        "angleTolerance": 0.35,
+        "byteLength": 59716,
+        "chordTolerance": 0.0015
+      }
+    },
+    "surfaceInput": "95b4d6080acc67ef83bcc96120a1c7e1e23d321d8f7585fa2d95533dc4d1f857",
+    "surfaceObject": "198293e3d9376d786546b5a4c4cbb9af7384b9efc684d4091b112f4ed12c4508"
+  }
+}

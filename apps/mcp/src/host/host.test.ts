@@ -7,8 +7,9 @@ import { chatReach, createChatPromptContext } from './prompt';
 import { createServer, type SyncReply, type SyncRequest, type ViewEvent } from './server';
 import { createViewSync, LOST_AFTER, NEWS_MS, SYNC_MS } from './sync';
 import {
-  createHttpTessellationCacheProvider, encodeComponentTessellation, tessellationPayloadFacts,
+  createHttpTessellationCacheProvider, tessellationPayloadFacts,
 } from '@text-to-cad/core/lib/surf/tessellationCache.js';
+import { encodeTessFixture } from '@text-to-cad/core/lib/surf/testing.js';
 import { createTunnelClient, createTunnelFetch, decodeBase64, TUNNEL_ORIGIN, TUNNEL_REPLY_MAX_BYTES } from './tunnel';
 
 /** A host frame: records what the page posts and answers with `respond`. */
@@ -299,12 +300,11 @@ describe('the fetch tunnel', () => {
   it('verifies a tessellation read in parts as a whole one: put together it is the body, and a damaged part makes it a miss', async () => {
     const vertices = 200_000;
     const triangles = 50_000;
-    const bytes = encodeComponentTessellation({
+    const bytes = encodeTessFixture({
       positions: new Float32Array(3 * vertices).map((_, index) => index % 97),
       normals: new Float32Array(3 * vertices).fill(1),
       faceOrds: new Float32Array(vertices).fill(1),
       indices: new Uint32Array(3 * triangles).map((_, index) => index % vertices),
-      sideOrds: new Uint32Array(3 * triangles).fill(1),
       faceRanges: [{ ord: 1, indexStart: 0, indexCount: 3 * triangles }],
       edges: [],
       bounds: { min: [0, 0, 0], max: [96, 96, 96] },

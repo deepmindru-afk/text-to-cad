@@ -5,11 +5,10 @@ import test from "node:test";
 import {
   TESS_CACHE_MAGIC,
   TESS_CACHE_VERSION,
+  TESSELLATION_VERSION,
   createHttpTessellationCacheProvider,
   decodeComponentTessellation,
   decodeTessellationCacheBatch,
-  edgeClassesFromSurfIndex,
-  encodeComponentTessellation,
   encodeTessellationCacheBatch,
   float64Hex,
   isTessellationCacheProbeMissError,
@@ -23,8 +22,8 @@ import {
   tessellationPayloadFacts,
   validateTessellationProbeRow,
 } from "./tessellationCache.js";
-import { DEFAULT_OPTIONS, TESSELLATION_VERSION, tessellateComponent } from "./tessellate.js";
 import { buildMeshDataFromSurf } from "./surfMeshData.js";
+import { encodeTessFixture, memoryMeshProvider, meshFixture, probeRowFor } from "./__tests__/meshFixtures.js";
 import { buildComposedPackageMeshData } from "../assembly/meshData.js";
 
 let tessellationCache = createTessellationCache();
@@ -45,7 +44,6 @@ function componentFixture() {
     normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
     faceOrds: new Float32Array([7, 7, 7]),
     indices: new Uint32Array([0, 1, 2]),
-    sideOrds: new Uint32Array([1, 2, 3]),
     faceRanges: [{ ord: 7, color: [0.2, 0.4, 0.6, 1], indexStart: 0, indexCount: 3 }],
     edges: [{
       ord: 9,
@@ -58,7 +56,7 @@ function componentFixture() {
 }
 
 function encodedEntry(overrides = {}) {
-  return encodeComponentTessellation(componentFixture(), {
+  return encodeTessFixture(componentFixture(), {
     surfaceInput: D,
     surfaceObject: O,
     tessellation: Q,
@@ -116,27 +114,25 @@ test("lossless binary64 keys match Python and separate old decimal collisions", 
   assert.notEqual(
     tessellationCacheKey(D, { ...Q, chordTolerance: closeA }),
     tessellationCacheKey(D, { ...Q, chordTolerance: closeB }),
-    "v4 key preserves the requested double",
+    "the key preserves the requested double",
   );
 
-  // An option the key does not spell must never reach a hit: loopTolerance,
-  // maxRefineDepth and minLoopSegments all change the triangles, and the key
-  // would be byte-identical to a default run's.
-  for (const [name, value] of [["loopTolerance", 1e-5], ["maxRefineDepth", 9], ["minLoopSegments", 32]]) {
+  // The tolerances are the only options a mesh is keyed by: anything else is a request for
+  // something no stored mesh is, and never reaches a hit.
+  for (const [name, value] of [["loopTolerance", 1e-5], ["maxRefineDepth", 9], ["collectBoundaryDebug", true]]) {
     assert.throws(
       () => tessellationCacheKey(D, { ...Q, [name]: value }),
-      new RegExp(`not part of the cache key: ${name}`),
+      new RegExp(`not part of the mesh key: ${name}`),
     );
-    assert.throws(() => tessellationQuality({ [name]: value }), /not part of the cache key/);
+    assert.throws(() => tessellationQuality({ [name]: value }), /not part of the mesh key/);
   }
-  // Restating a default is not a divergence, so it still keys normally.
-  assert.equal(
-    tessellationCacheKey(D, { ...Q, loopTolerance: DEFAULT_OPTIONS.loopTolerance }),
-    tessellationCacheKey(D, Q),
-  );
+  // A quality read back from an entry keys as the request it spells.
+  assert.equal(tessellationCacheKey(D, tessellationQuality(Q)), tessellationCacheKey(D, Q));
+  // An empty request is the default pair, as cadgen keys it.
+  assert.equal(tessellationCacheKey(D), `${D}-t${TESSELLATION_VERSION}-p5-l3f589374bc6a7efa-a3fd6666666666666`);
 });
 
-test("v4 round-trips the full typed payload and exposes exact D/O/L/Q/R", () => {
+test("v5 round-trips the full typed payload and exposes exact D/O/L/Q/R", () => {
   const source = componentFixture();
   const bytes = encodedEntry();
   const L = tessellationCacheKey(D, Q);
@@ -149,7 +145,7 @@ test("v4 round-trips the full typed payload and exposes exact D/O/L/Q/R", () => 
     tessellation: Q,
   });
   assert.ok(decoded);
-  assert.equal(TESS_CACHE_VERSION, 4);
+  assert.equal(TESS_CACHE_VERSION, 5);
   assert.deepEqual(decoded.identity, {
     surfaceInput: D,
     surfaceObject: O,
@@ -157,11 +153,11 @@ test("v4 round-trips the full typed payload and exposes exact D/O/L/Q/R", () => 
     renderIdentity: R,
     quality: tessellationQuality(Q),
     tessellatorVersion: TESSELLATION_VERSION,
-    payloadVersion: 4,
+    payloadVersion: 5,
   });
   assert.deepEqual(decoded.partColor, [0.6, 0.5, 0.4, 1]);
   assert.deepEqual(decoded.edgeClasses, [[9, "boundary"]]);
-  for (const field of ["positions", "normals", "faceOrds", "indices", "sideOrds"]) {
+  for (const field of ["positions", "normals", "faceOrds", "indices"]) {
     assert.deepEqual([...decoded.component[field]], [...source[field]], field);
     assert.equal(decoded.component[field].buffer, bytes.buffer, `${field} is zero-copy`);
   }
@@ -181,24 +177,22 @@ test("v4 round-trips the full typed payload and exposes exact D/O/L/Q/R", () => 
 });
 
 test("empty imported components round-trip through the cache without changing assembly bounds", () => {
-  const index = { shapes: [{ ord: 1, kind: "shape", volume: null }], faces: [], edges: [] };
-  const component = tessellateComponent(index, new Float32Array(0));
-  const decoded = decodeComponentTessellation(encodeComponentTessellation(component, {
+  // What cadgen stores for a product with no faces and no edges: empty arrays, zero bounds.
+  const component = {
+    positions: new Float32Array(0), normals: new Float32Array(0), faceOrds: new Float32Array(0),
+    indices: new Uint32Array(0), faceRanges: [], edges: [],
+    bounds: { min: [0, 0, 0], max: [0, 0, 0] }, scale: 1e-6,
+  };
+  const decoded = decodeComponentTessellation(encodeTessFixture(component, {
     surfaceInput: D,
     surfaceObject: O,
     edgeClasses: [],
   }));
-  assert.ok(decoded, "an empty product entry is a valid complete cache payload");
-  assert.deepEqual(decoded.component, component);
-  const freshMesh = buildMeshDataFromSurf(index, null, { component });
-  const cachedMesh = buildMeshDataFromSurf(surfIndexFromCacheEntry(decoded), null, {
-    component: decoded.component,
-  });
-  assert.deepEqual(cachedMesh, freshMesh);
-
-  const solidMesh = buildMeshDataFromSurf({ faces: [], edges: [] }, null, {
-    component: componentFixture(),
-  });
+  assert.ok(decoded, "an empty product entry is a valid complete payload");
+  assert.deepEqual({ ...decoded.component, positions: [...decoded.component.positions] },
+    { ...component, positions: [] });
+  const emptyMesh = buildMeshDataFromSurf(surfIndexFromCacheEntry(decoded), decoded.component);
+  const solidMesh = buildMeshDataFromSurf({ faces: [], edges: [] }, componentFixture());
   const descriptor = { assembly: { root: {
     id: "root", nodeType: "assembly", children: [
       { id: "empty", nodeType: "part", children: [] },
@@ -210,50 +204,37 @@ test("empty imported components round-trip through the cache without changing as
     ] },
     { id: "solid", component: "solid" },
   ] };
-  for (const emptyMesh of [freshMesh, cachedMesh]) {
-    const assembly = buildComposedPackageMeshData(descriptor, new Map([
-      ["empty", emptyMesh], ["solid", solidMesh],
-    ]));
-    assert.deepEqual(assembly.parts.map((part) => part.occurrenceId), ["empty", "solid"]);
-    assert.deepEqual(assembly.missingComponentIds, []);
-    assert.equal(assembly.parts[0].bounds, null);
-    assert.equal(assembly.parts[0].triangleCount, 0);
-    assert.equal(assembly.parts[1].triangleCount, 1);
-    assert.deepEqual(assembly.bounds, solidMesh.bounds, "only real geometry frames the view");
-    assert.deepEqual(assembly.assemblyRoot.bounds, solidMesh.bounds);
-  }
+  const assembly = buildComposedPackageMeshData(descriptor, new Map([
+    ["empty", emptyMesh], ["solid", solidMesh],
+  ]));
+  assert.deepEqual(assembly.parts.map((part) => part.occurrenceId), ["empty", "solid"]);
+  assert.deepEqual(assembly.missingComponentIds, []);
+  assert.equal(assembly.parts[0].bounds, null);
+  assert.equal(assembly.parts[0].triangleCount, 0);
+  assert.equal(assembly.parts[1].triangleCount, 1);
+  assert.deepEqual(assembly.bounds, solidMesh.bounds, "only real geometry frames the view");
+  assert.deepEqual(assembly.assemblyRoot.bounds, solidMesh.bounds);
 });
 
-test("a wire-only imported component is measured by its edges and frames nothing", () => {
-  // A STEP product holding only wires (a sketch, a reference curve) has no
-  // faces, so no loops measure it: its edge curves do.
-  const index = { shapes: [{ ord: 1, kind: "shape", volume: null }], faces: [], edges: [
-    { ord: 1, class: "feature", curve: { kind: "line", origin: [0, 0, 0], dir: [0, 0, 1], range: [0, 50] } },
-    { ord: 2, class: "feature", curve: {
-      kind: "circle", radius: 10, origin: [0, 0, 50], xdir: [1, 0, 0], ydir: [0, 1, 0], zdir: [0, 0, 1],
-      range: [0, 2 * Math.PI],
-    } },
-  ] };
-  const near = (actual, expected) => actual.every((value, d) => Math.abs(value - expected[d]) < 1e-4);
-  const component = tessellateComponent(index, new Float32Array(0));
-  assert.equal(component.indices.length, 0);
-  assert.deepEqual(component.edges.map((edge) => edge.ord), [1, 2]);
-  assert.ok(Math.abs(component.scale - Math.hypot(20, 50)) < 1e-6, "the wires' size, not the floor");
-  assert.ok(near(component.bounds.min, [-10, -10, 0]) && near(component.bounds.max, [10, 10, 50]),
-    "the drawn edges are the bounds");
-  const decoded = decodeComponentTessellation(encodeComponentTessellation(component, {
-    surfaceInput: D,
-    surfaceObject: O,
-    edgeClasses: edgeClassesFromSurfIndex(index),
-  }));
-  assert.ok(decoded, "a wire-only product is a valid complete cache payload");
-  assert.deepEqual(decoded.component, component);
+test("a wire-only imported component draws its edges and frames nothing", () => {
+  // A STEP product holding only wires (a sketch, a reference curve) has no faces: cadgen stores
+  // its edges' polylines, bounded by their points, and no triangles.
+  const component = {
+    positions: new Float32Array(0), normals: new Float32Array(0), faceOrds: new Float32Array(0),
+    indices: new Uint32Array(0), faceRanges: [],
+    edges: [
+      { ord: 1, visibilityClass: "feature", polyline: new Float32Array([0, 0, 0, 0, 0, 50]) },
+      { ord: 2, visibilityClass: "feature", polyline: new Float32Array([10, 0, 50, 0, 10, 50, -10, 0, 50]) },
+    ],
+    bounds: { min: [-10, 0, 0], max: [10, 10, 50] }, scale: Math.hypot(20, 10, 50),
+  };
+  const decoded = decodeComponentTessellation(encodeTessFixture(component, { surfaceInput: D, surfaceObject: O }));
+  assert.ok(decoded, "a wire-only product is a valid complete payload");
+  assert.deepEqual(decoded.component.edges.map((edge) => edge.ord), [1, 2]);
 
-  const wireMesh = buildMeshDataFromSurf(index, null, { component });
+  const wireMesh = buildMeshDataFromSurf(surfIndexFromCacheEntry(decoded), decoded.component);
   assert.ok(wireMesh.cadEdgePositions.length > 0, "its edges reach the mesh data");
-  const solidMesh = buildMeshDataFromSurf({ faces: [], edges: [] }, null, {
-    component: componentFixture(),
-  });
+  const solidMesh = buildMeshDataFromSurf({ faces: [], edges: [] }, componentFixture());
   const assembly = buildComposedPackageMeshData({ assembly: { root: {
     id: "root", nodeType: "assembly", children: [
       { id: "wire", nodeType: "part", children: [] },
@@ -266,6 +247,24 @@ test("a wire-only imported component is measured by its edges and frames nothing
   assert.deepEqual(assembly.parts.map((part) => part.occurrenceId), ["wire", "solid"]);
   assert.equal(assembly.parts[0].bounds, null, "nothing draws a part without triangles");
   assert.deepEqual(assembly.bounds, solidMesh.bounds, "so it cannot move the camera");
+});
+
+test("cadgen's stored meshes decode as the bodies their probe rows describe", () => {
+  for (const [name, level] of [["sun_gear", 0], ["sun_gear", 1], ["cam_follower_roller", 1], ["mixed", 0]]) {
+    const fixture = meshFixture(name, level);
+    const row = validateTessellationProbeRow(fixture.row, {
+      tessellationInput: tessellationCacheKey(fixture.surfaceInput, fixture.tessellation || {}),
+    });
+    assert.ok(row, `${name} L${level} row`);
+    const decoded = decodeComponentTessellation(fixture.bytes, {
+      surfaceInput: fixture.surfaceInput, surfaceObject: fixture.surfaceObject, tessellation: fixture.tessellation || {},
+    });
+    assert.ok(decoded, `${name} L${level} decodes`);
+    assert.equal(decoded.component.positions.length, decoded.component.normals.length);
+    assert.equal(decoded.component.faceOrds.length * 3, decoded.component.positions.length);
+    assert.ok(decoded.component.indices.length > 0 && decoded.component.edges.length > 0);
+    assert.ok(surfIndexFromCacheEntry(decoded), "every stored mesh carries its display index");
+  }
 });
 
 test("decode rejects expected and embedded identity mismatches as cache misses", () => {
@@ -345,7 +344,7 @@ test("decode rejects malformed complete-render metadata as cache misses", () => 
   assert.ok(decodeComponentTessellation(extended), "extra object fields remain forward-compatible");
 });
 
-test("batch container preserves aligned zero-copy v4 hits, misses and odd payloads", () => {
+test("batch container preserves aligned zero-copy hits, misses and odd payloads", () => {
   const entry = encodedEntry();
   const odd = new Uint8Array([1, 2, 3]);
   const batch = encodeTessellationCacheBatch([entry, null, odd]);
@@ -367,32 +366,60 @@ test("batch container preserves aligned zero-copy v4 hits, misses and odd payloa
   assert.equal(decodeTessellationCacheBatch(corrupt), null);
 });
 
-test("provider batch and writeback accept only entries bound to requested L", async (t) => {
+test("probes and reads accept only entries bound to the requested L", async (t) => {
   t.after(() => setTessellationCacheProvider(null));
-  const bodies = new Map();
-  const rows = new Map();
-  const puts = [];
-  setTessellationCacheProvider({
-    async probeMany(keys) { return keys.map((key) => rows.get(key) ?? null); },
-    async getProbed(row) { return bodies.get(row.object) ?? null; },
-    async put(key, bytes) {
-      puts.push(key);
-      const facts = tessellationPayloadFacts(bytes, { tessellationInput: key });
-      const object = createHash("sha256").update(bytes).digest("hex");
-      const row = validateTessellationProbeRow({ schemaVersion: 1, object, ...facts });
-      rows.set(key, row);
-      bodies.set(object, bytes);
-    },
-  });
   const entry = encodedEntry();
-  await tessellationCache.writeBackEntryBytes(D2, Q, entry);
-  assert.equal(puts.length, 0, "mismatched D is not persisted");
-  await tessellationCache.writeBackEntryBytes(D, Q, entry);
-  assert.deepEqual(puts, [tessellationCacheKey(D, Q)]);
+  const row = probeRowFor(entry);
+  setTessellationCacheProvider({
+    // A provider answering every key with D's row: only D's key may adopt it.
+    async probeMany(keys) { return keys.map(() => row); },
+    async getProbed() { return entry; },
+  });
   const probes = await tessellationCache.probeCachedTessellationEntries([D, D2], Q);
   assert.deepEqual([...probes.keys()], [D], "only the bound entry is readable");
   const hit = await tessellationCache.getCachedComponentEntry(D, Q, { probe: probes.get(D) });
   assert.equal(hit.identity.surfaceObject, O);
+  assert.equal(await tessellationCache.getCachedEntryBytes(D2, Q), null);
+});
+
+test("a host that meshes on request answers what a probe found missing, as a probe would", async (t) => {
+  t.after(() => setTessellationCacheProvider(null));
+  const stored = encodedEntry();
+  const made = encodedEntry({ surfaceInput: D2 });
+  const provider = memoryMeshProvider([stored], { produce: [made] });
+  setTessellationCacheProvider(provider);
+  const probed = await tessellationCache.probeCachedTessellationEntries([D, D2], Q);
+  assert.deepEqual([...probed.keys()], [D]);
+  const produced = await tessellationCache.produceTessellationEntries([D2], Q);
+  assert.deepEqual([...produced.keys()], [D2]);
+  assert.equal(provider.counts.produced, 1);
+  const bytes = await tessellationCache.getCachedEntryBytes(D2, Q, { probe: produced.get(D2), strictProbe: true });
+  assert.deepEqual(bytes, made, "the produced mesh reads as a stored one");
+  const unknown = "33".repeat(32);
+  assert.deepEqual([...(await tessellationCache.produceTessellationEntries([unknown], Q)).keys()], [],
+    "a mesh the host cannot make stays missing");
+
+  // A host that only reads (the viewer) offers no produce request: nothing is asked.
+  setTessellationCacheProvider(memoryMeshProvider([stored]));
+  assert.equal((await tessellationCache.produceTessellationEntries([D2], Q)).size, 0);
+});
+
+test("an HTTP produce request names its keys, and a refusal is an error with the host's reason", async () => {
+  const entry = encodedEntry();
+  const row = probeRowFor(entry);
+  const key = tessellationCacheKey(D, Q);
+  const calls = [];
+  let answer = new Response(JSON.stringify({ entries: { [key]: row } }), { status: 200 });
+  const provider = createHttpTessellationCacheProvider({
+    origin: "http://snapshot.test", produceUrl: "http://snapshot.test/__tess_cache/produce",
+    fetch: async (url, options) => { calls.push({ url: String(url), body: JSON.parse(options.body) }); return answer; },
+  });
+  assert.deepEqual(await provider.produceMany([key]), [row]);
+  assert.deepEqual(calls, [{ url: "http://snapshot.test/__tess_cache/produce", body: { tessellationInputs: [key] } }]);
+  answer = new Response("cadgen could not mesh a component: OCCT did not mesh 1 face(s)", { status: 500 });
+  await assert.rejects(provider.produceMany([key]), /OCCT did not mesh 1 face/);
+  assert.equal(createHttpTessellationCacheProvider({ origin: "http://viewer.test" }).produceMany, undefined,
+    "a provider names a produce route only where its host serves one");
 });
 
 test("a vanished probed body is an explicit retry boundary only when requested", async (t) => {
@@ -517,33 +544,24 @@ test("bounded probes retain other chunks when one metadata response is unavailab
   assert.equal(hits.has(inputs[256]), false);
 });
 
-test("render-session caches isolate exact objects, deferred writes and disposal", async () => {
-  const written = [[], []];
+test("render-session caches isolate exact objects and disposal", async () => {
   const entries = [encodedEntry(), encodedEntry({ surfaceObject: O2 })];
-  const caches = entries.map((bytes, index) => {
-    const facts = tessellationPayloadFacts(bytes);
-    const row = validateTessellationProbeRow({ schemaVersion: 1,
-      object: createHash("sha256").update(bytes).digest("hex"), ...facts });
+  const caches = entries.map((bytes) => {
+    const row = probeRowFor(bytes);
     return createTessellationCache({
       provider: {
         probeMany: async () => [row],
         getProbed: async () => bytes,
-        put: async (_key, body) => written[index].push(body),
       },
-      writeBack: { deferMs: 10_000, concurrency: 1 },
     });
   });
   try {
     const decoded = await Promise.all(caches.map((cache) => cache.getCachedComponentEntry(D, Q)));
     assert.equal(decoded[0].identity.surfaceObject, O);
     assert.equal(decoded[1].identity.surfaceObject, O2);
-    await Promise.all(caches.map((cache, index) => cache.writeBackEntryBytes(D, Q, entries[index])));
     caches[0].dispose();
-    await caches[1].flushTessellationCacheWriteBacks();
-    assert.deepEqual(written, [[], [entries[1]]]);
     assert.equal(await caches[0].getCachedEntryBytes(D, Q), null);
-    assert.equal(caches[0].memoryStats().writeBackBytes, 0);
-    assert.equal(caches[1].memoryStats().writeBackBytes, 0);
+    assert.deepEqual(await caches[1].getCachedEntryBytes(D, Q), entries[1]);
   } finally {
     for (const cache of caches) cache.dispose();
   }
@@ -571,137 +589,6 @@ test("cache disposal rejects a late custom-provider response without affecting a
     assert.deepEqual(await b.getCachedEntryBytes(D, Q), entry);
   } finally {
     a.dispose(); b.dispose();
-  }
-});
-
-// Distinct component inputs, each with its own encoded entry: a load's worth of write-backs.
-const loadInputs = ["31", "32", "33", "34", "35", "36", "37", "38"].map((pair) => pair.repeat(32));
-const loadEntry = (surfaceInput) => encodedEntry({ surfaceInput });
-// Every pending callback and microtask: what a resolved write leads to has happened.
-const settled = () => new Promise((resolve) => setImmediate(resolve));
-
-test("deferred write-backs go out by their ceiling while a long load keeps adding entries, and in batches", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
-  const written = [];
-  const cache = createTessellationCache({ provider: {
-    probeMany: async () => [], getProbed: async () => null,
-    put: async (key) => { written.push(key); },
-  }, writeBack: { deferMs: 1500, maxWaitMs: 2000, concurrency: 2 } });
-  const keys = loadInputs.map((surfaceInput) => tessellationCacheKey(surfaceInput, Q));
-  // A long cold load: an entry every 500 ms, so it is never quiet for the 1500 ms a batch waits for.
-  const loadFor = async (indices) => {
-    for (const index of indices) {
-      await cache.writeBackEntryBytes(loadInputs[index], Q, loadEntry(loadInputs[index]));
-      t.mock.timers.tick(500);
-      await settled();
-      if (index % 4 < 3) assert.deepEqual(written, keys.slice(0, index - (index % 4)), "entries wait to be written together");
-    }
-  };
-  try {
-    await loadFor([0, 1, 2, 3]);
-    assert.deepEqual(written, keys.slice(0, 4), "two seconds after its first entry the batch was written, though the load never went quiet");
-    await loadFor([4, 5, 6, 7]);
-    assert.deepEqual(written, keys, "and so was the next");
-    assert.equal(cache.memoryStats().writeBackBytes, 0);
-
-    // A load that goes quiet still writes after its quiet interval.
-    await cache.writeBackEntryBytes(D, Q, encodedEntry());
-    t.mock.timers.tick(1500);
-    await settled();
-    assert.deepEqual(written, [...keys, tessellationCacheKey(D, Q)]);
-  } finally {
-    cache.dispose();
-  }
-});
-
-test("a batch that reaches its byte bound is written at once, not turned away; only a writer still busy with the last one turns entries away", async (t) => {
-  // No timer fires here: whatever is written, the byte bound wrote.
-  t.mock.timers.enable({ apis: ["setTimeout"] });
-  const entries = loadInputs.map(loadEntry);
-  const keys = loadInputs.map((surfaceInput) => tessellationCacheKey(surfaceInput, Q));
-  const size = entries[0].byteLength;
-  const starts = [];
-  const finishes = [];
-  const cache = createTessellationCache({ provider: {
-    probeMany: async () => [], getProbed: async () => null,
-    put: (key) => { starts.push(key); return new Promise((resolve) => finishes.push(resolve)); },
-  }, writeBack: { deferMs: 10_000, concurrency: 1, maxPendingBytes: 2 * size } });
-  const write = (index) => cache.writeBackEntryBytes(loadInputs[index], Q, entries[index]);
-  try {
-    await write(0);
-    assert.deepEqual(starts, []);
-    assert.equal(cache.memoryStats().pendingWriteBackBytes, size);
-    await write(1);
-    assert.deepEqual(starts, [keys[0]], "the full batch is being written, at the configured concurrency");
-    assert.deepEqual(cache.memoryStats(), { pendingWriteBackBytes: 0, activeWriteBackBytes: 2 * size, writeBackBytes: 2 * size });
-
-    // The next batch fills while the writer is busy; past its bound the writer cannot take it,
-    // so memory wins: one batch writing and one waiting, and the entry beyond them is turned away.
-    await write(2);
-    await write(3);
-    await write(4);
-    assert.deepEqual(cache.memoryStats(), { pendingWriteBackBytes: 2 * size, activeWriteBackBytes: 2 * size, writeBackBytes: 4 * size });
-
-    // Once the writer is free, the waiting batch goes at once.
-    finishes.shift()();
-    await settled();
-    assert.deepEqual(starts, keys.slice(0, 2));
-    finishes.shift()();
-    await settled();
-    assert.deepEqual(starts, keys.slice(0, 3), "the full batch followed the moment the writer was free");
-    finishes.shift()();
-    await settled();
-    finishes.shift()();
-    await settled();
-    assert.deepEqual(starts, keys.slice(0, 4));
-    assert.equal(cache.memoryStats().writeBackBytes, 0);
-  } finally {
-    cache.dispose();
-  }
-});
-
-test("root-owned write-backs survive view disposal within one shared byte budget", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
-  const firstBytes = encodedEntry();
-  const secondBytes = encodedEntry({ surfaceInput: D2 });
-  const written = [];
-  const owner = createTessellationCache({
-    provider: {
-      probeMany: async () => [], getProbed: async () => null,
-      put: async (key) => written.push(key),
-    },
-    writeBack: { deferMs: 10_000, concurrency: 1, maxPendingBytes: firstBytes.byteLength + secondBytes.byteLength },
-  });
-  try {
-    const previous = owner.createSession();
-    await previous.writeBackEntryBytes(D, Q, firstBytes);
-    previous.dispose();
-    previous.dispose();
-    assert.equal(previous.tessellationCacheProviderRegistered(), false);
-    assert.equal(owner.memoryStats().pendingWriteBackBytes, firstBytes.byteLength,
-      "closing a view leaves its already-admitted write owned by the root");
-
-    const current = owner.createSession();
-    await current.writeBackEntryBytes(D2, Q, secondBytes);
-    await settled();
-    assert.deepEqual(written, [tessellationCacheKey(D, Q), tessellationCacheKey(D2, Q)],
-      "new views share the root queue's batch: the second view's entry filled it, and it was written whole");
-    await current.flushTessellationCacheWriteBacks();
-    assert.equal(owner.memoryStats().writeBackBytes, 0);
-    written.length = 0;
-    await previous.writeBackEntryBytes(D2, Q, secondBytes);
-    assert.equal(owner.memoryStats().writeBackBytes, 0, "late results from a disposed view cannot enqueue writes");
-
-    await current.writeBackEntryBytes(D2, Q, secondBytes);
-    assert.equal(owner.memoryStats().pendingWriteBackBytes, secondBytes.byteLength);
-    owner.dispose();
-    assert.equal(current.tessellationCacheProviderRegistered(), false);
-    assert.equal(owner.memoryStats().writeBackBytes, 0, "closing the root still releases pending cache memory");
-    await current.flushTessellationCacheWriteBacks();
-    assert.deepEqual(written, [], "nothing the root let go of is written");
-    assert.throws(() => owner.createSession(), /disposed/);
-  } finally {
-    owner.dispose();
   }
 });
 

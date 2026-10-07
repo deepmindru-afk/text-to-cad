@@ -4,8 +4,9 @@ import { createHash } from 'node:crypto';
 import { createHttpCadResourceProvider, SurfaceResolutionError } from '@text-to-cad/core/client';
 import { entryHasMesh, entryHasReferences } from '@text-to-cad/core/lib/entryAssets.js';
 import { renderAssetCacheStats } from '@text-to-cad/core/lib/renderAssetClient.js';
-import { createTessellationCache, encodeComponentTessellation, tessellationPayloadFacts,
+import { createTessellationCache, tessellationPayloadFacts,
   tessellationCacheKey, validateTessellationProbeRow } from '@text-to-cad/core/lib/surf/tessellationCache.js';
+import { encodeTessFixture } from '@text-to-cad/core/lib/surf/testing.js';
 import { lodTessellationForLevel } from '@text-to-cad/core/lib/surf/lodPolicy.js';
 import { completedPackages } from '../../../render/completedPackageCache.js';
 import { lodPayloadRequest } from '../../../render/lodPayloadRequest.js';
@@ -55,11 +56,10 @@ function warmLargeStep() {
     const cid = `c${i}`;
     const surfaceInput = createHash('sha256').update(`317-component-${cid}`).digest('hex');
     const surfaceObject = 'a'.repeat(64);
-    const bytes = encodeComponentTessellation({
+    const bytes = encodeTessFixture({
       positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
       normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
       faceOrds: new Float32Array([1, 1, 1]), indices: new Uint32Array([0, 1, 2]),
-      sideOrds: new Uint32Array([1, 2, 3]),
       faceRanges: [{ ord: 1, color: null, indexStart: 0, indexCount: 3 }],
       edges: [], bounds: { min: [0, 0, 0], max: [1, 1, 0] }, scale: 1,
     }, { surfaceInput, surfaceObject, tessellation, edgeClasses: [] });
@@ -211,6 +211,50 @@ it('keeps a surface a refinement resolved through the next progressive publish',
     expect(opened.result.current.prepareComponentLodPayload(component.cid, 0, payload)).toBe(payload);
     await act(() => loading);
     expect(opened.result.current.meshState.meshData.parts).toHaveLength(317);
+    opened.unmount();
+  } finally { owner.dispose(); }
+});
+
+// A cold component is never tessellated here: the surface request that derives its surface names
+// the tier the load opens at, cadgen meshes it there, and the ticket's mesh row is read as a warm
+// component's probe row is.
+it('has cadgen mesh a cold component in its surface request, then reads that mesh', async () => {
+  const { client, model, encoded } = warmLargeStep();
+  const cold = new Set(['c3', 'c250'].map(cid => createHash('sha256').update(`317-component-${cid}`).digest('hex')));
+  const coldKey = key => [...cold].some(input => key.startsWith(input));
+  const probe = vi.fn(async keys => keys.map(key => (coldKey(key) ? null : encoded.get(key)?.row || null)));
+  const single = vi.fn(async row => encoded.get(row.tessellationInput)?.bytes.slice() || null);
+  const many = vi.fn(async rows => rows.map(row => encoded.get(row.tessellationInput)?.bytes.slice() || null));
+  const owner = createTessellationCache({ provider: { probeMany: probe, getProbed: single, getManyProbed: many } });
+  const requests = [];
+  const meshing = { ...client, resolveSurfaceComponents: vi.fn(async (_descriptor, requested, options) => {
+    requests.push({ cids: requested.map(({ cid }) => cid), tessellation: options.tessellation });
+    return new Map(requested.map(({ cid, surfaceInput }) => {
+      // What cadgen does with the request: meshes the component at that tier and stores it.
+      const bytes = encodeTessFixture({
+        positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]), normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        faceOrds: new Float32Array([1, 1, 1]), indices: new Uint32Array([0, 1, 2]),
+        faceRanges: [{ ord: 1, color: null, indexStart: 0, indexCount: 3 }],
+        edges: [], bounds: { min: [0, 0, 0], max: [1, 1, 0] }, scale: 1,
+      }, { surfaceInput, surfaceObject: 'a'.repeat(64), tessellation: options.tessellation, edgeClasses: [] });
+      const mesh = validateTessellationProbeRow({ schemaVersion: 1,
+        object: createHash('sha256').update(bytes).digest('hex'), ...tessellationPayloadFacts(bytes) });
+      encoded.set(mesh.tessellationInput, { bytes, row: mesh });
+      return [cid, { surfaceInput, surfaceObject: 'a'.repeat(64), byteLength: 100, mesh,
+        surfUrl: `https://cad-assets.test/__cad/store?surfaceInput=${surfaceInput}` }];
+    }));
+  }) };
+  try {
+    const opened = renderHook(() => assets(model, meshing, owner.createSession()));
+    await act(() => opened.result.current.loadMeshForEntry(model));
+    expect(opened.result.current.error).toBe('');
+    expect(opened.result.current.meshState.meshData.parts).toHaveLength(317);
+    // A 317-component package opens at the coarse tier, so that is the tier cadgen was asked for.
+    expect(requests.flatMap(({ cids }) => cids).sort()).toEqual(['c250', 'c3']);
+    expect(requests.every(({ tessellation }) => tessellationCacheKey('0'.repeat(64), tessellation)
+      === tessellationCacheKey('0'.repeat(64), lodTessellationForLevel(0)))).toBe(true);
+    // Their bodies were read by the rows the surface request answered, alone.
+    expect(single.mock.calls.map(([row]) => row.surfaceInput).sort()).toEqual([...cold].sort());
     opened.unmount();
   } finally { owner.dispose(); }
 });

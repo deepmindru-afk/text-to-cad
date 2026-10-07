@@ -146,7 +146,8 @@ def _request(body: bytes) -> tuple[dict, dict, dict, str | None, dict]:
     tessellations = [] if value.get("tessellation") is None else surfaces.normalize_tessellations([value["tessellation"]])
     operation = {"kind": "surfaces", "tree": value["tree"], "cids": sorted(selected),
                  "producer": producer, "expected_objects": expected,
-                 "tessellations": [{"chordTolerance": chord, "angleTolerance": angle} for chord, angle in tessellations]}
+                 **({"tessellations": [{"chordTolerance": chord, "angleTolerance": angle}
+                                       for chord, angle in tessellations]} if tessellations else {})}
     # The named components' objects, still on disk; the map itself is read-only.
     canonical = {"components": _pinned(tree, selected).components}
     return {"viewId": view_id}, selected, operation, job, canonical
@@ -191,7 +192,7 @@ def pinned_surface_object(tree: str, surface_input: str, digest: str):
 def _meshes(entry: dict, operation: dict) -> list[dict] | None:
     """The stored mesh records of every tessellation ``operation`` asks for, or None
     while any is missing."""
-    records = list(surfaces.mesh_records(entry, operation["producer"], operation["tessellations"]).values())
+    records = list(surfaces.mesh_records(entry, operation["producer"], operation.get("tessellations")).values())
     return None if any(record is None for record in records) else records
 
 

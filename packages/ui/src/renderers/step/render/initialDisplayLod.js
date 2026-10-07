@@ -37,6 +37,25 @@ export function initialDisplayLodFromProbe(cacheProbe, level, {
   };
 }
 
+/**
+ * The plan for a component whose mesh cadgen just produced at `level` (its surface request named
+ * that tier, and `mesh` is the probe row the request answered with). Sized as a warm plan is, from
+ * the stored body; one too large to admit with the rest still loads, alone, as the loader admits
+ * an oversized single component.
+ */
+export function producedDisplayLodPlan(mesh, level, { maxInFlightBytes } = {}) {
+  const estimatedBytes = Number(mesh?.byteLength) + Number(mesh?.decodedBytes);
+  if (!Number.isSafeInteger(estimatedBytes) || estimatedBytes <= 0) return null;
+  return {
+    level,
+    sourceExpansionRatio: level === 0
+      ? COARSE_SURF_DECODE_EXPANSION_ESTIMATE : DEFAULT_SURF_DECODE_EXPANSION_ESTIMATE,
+    estimatedBytes,
+    fitsDecodeCap: estimatedBytes <= Math.max(1, Number(maxInFlightBytes) || 1),
+    reason: "produced",
+  };
+}
+
 export async function probeInitialDisplayLod({
   surfaceInput, surfaceObject, maxInFlightBytes, signal, tessellationCache,
   rejectedCacheObjects = new Set(),

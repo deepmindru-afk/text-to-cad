@@ -1,15 +1,13 @@
-// Selector bundle from a .surf component (design/surface-rendering.md R3).
+// Selector bundle from a .surf component's index and its stored mesh.
 //
 // Produces the exact {manifest, buffers} shape loadRenderSelectorBundle
 // produced from a component GLB's STEP_TOPOLOGY extension, so
 // buildSelectorRuntime and everything above it (reference panel, picking,
 // measure, display edges) is untouched by the artifact swap. Rows carry
 // the same columns in the same spelling; geometry-derived values (areas,
-// centers, bboxes, edge polylines) come from the client tessellation of
-// the exact surfaces, which is the same source the GLB tables were
-// derived from server-side — just fresher.
-
-import { tessellateComponent } from "./tessellate.js";
+// centers, bboxes, edge polylines) come from the component's mesh — cadgen's
+// OCCT mesh of the exact surfaces, the same triangles the display draws, so
+// a face's triangle range here is its range on screen.
 
 export const STEP_TOPOLOGY_SCHEMA_VERSION = 2;
 
@@ -137,8 +135,8 @@ function faceStatistics(component, range) {
 
 const ANALYTIC_SURFACES = new Set(["plane", "cylinder", "cone", "sphere", "torus"]);
 
-export function buildSelectorBundleFromSurf(index, floats, options = {}) {
-  const component = options.component || tessellateComponent(index, floats);
+export function buildSelectorBundleFromSurf(index, component) {
+  if (!component?.faceRanges) throw new TypeError("A selector bundle needs the component's mesh");
   const faces = index.faces || [];
   const edges = index.edges || [];
   const shapesMeta = index.shapes || [{ ord: 1, kind: "shape", volume: null }];

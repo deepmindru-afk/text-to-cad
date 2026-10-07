@@ -13,7 +13,7 @@ import test from "node:test";
 import { createRequire } from "node:module";
 
 import { parseSurf } from "@text-to-cad/core/lib/surf/container.js";
-import { tessellateComponent } from "@text-to-cad/core/lib/surf/tessellate.js";
+import { decodeComponentTessellation } from "@text-to-cad/core/lib/surf/tessellationCache.js";
 import { buildMeshDataFromSurf } from "@text-to-cad/core/lib/surf/surfMeshData.js";
 import { buildSelectorBundleFromSurf } from "@text-to-cad/core/lib/surf/surfSelectorBundle.js";
 import { buildGlbFaceIdsForPart, TOPOLOGY_FACE_ID_NONE } from "@text-to-cad/core/lib/viewer/selectorPickGroups.js";
@@ -32,21 +32,16 @@ import {
 } from "./packageReferenceComposition.js";
 
 const require = createRequire(import.meta.url);
-const FIXTURE = path.join(
-  path.dirname(require.resolve("@text-to-cad/core/lib/surf/container.js")),
-  "fixtures",
-  "sun_gear.surf"
-);
+// The gear's SURF and cadgen's stored meshes of it at two LOD levels (core's surf fixtures).
+const FIXTURES = path.join(path.dirname(require.resolve("@text-to-cad/core/lib/surf/container.js")), "fixtures");
 
-function loadLevel(chordTolerance) {
-  const buffer = fs.readFileSync(FIXTURE);
-  const { index, floats } = parseSurf(
-    buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength)
-  );
-  const component = tessellateComponent(index, floats, chordTolerance ? { chordTolerance } : {});
+function loadLevel(level) {
+  const buffer = fs.readFileSync(path.join(FIXTURES, "sun_gear.surf"));
+  const { index } = parseSurf(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength));
+  const { component } = decodeComponentTessellation(new Uint8Array(fs.readFileSync(path.join(FIXTURES, `sun_gear.l${level}.tess`))));
   return {
-    meshData: buildMeshDataFromSurf(index, floats, { component }),
-    bundle: buildSelectorBundleFromSurf(index, floats, { component }),
+    meshData: buildMeshDataFromSurf(index, component),
+    bundle: buildSelectorBundleFromSurf(index, component),
     component
   };
 }
@@ -95,9 +90,9 @@ function faceIdInvariant(meshData, runtime) {
   return { ok: true, reason: "" };
 }
 
-test("levels tessellate differently (precondition for the suite)", () => {
+test("levels mesh differently (precondition for the suite)", () => {
   const level0 = loadLevel(0);
-  const level1 = loadLevel(5e-4);
+  const level1 = loadLevel(1);
   assert.notEqual(
     Math.floor(level0.meshData.indices.length / 3),
     Math.floor(level1.meshData.indices.length / 3),
@@ -106,19 +101,19 @@ test("levels tessellate differently (precondition for the suite)", () => {
 });
 
 test("matched level: every displayed triangle maps to a face row", () => {
-  for (const chord of [0, 5e-4]) {
-    const { meshData, bundle } = loadLevel(chord);
+  for (const level of [0, 1]) {
+    const { meshData, bundle } = loadLevel(level);
     const runtime = composePackageSelectorRuntime(ENTRY, OCCURRENCES, { c0: bundle }, {
       singleComponentPart: false
     });
     const verdict = faceIdInvariant(meshData, runtime);
-    assert.ok(verdict.ok, `chord=${chord}: ${verdict.reason}`);
+    assert.ok(verdict.ok, `level=${level}: ${verdict.reason}`);
   }
 });
 
 test("MISmatched levels violate the invariant — the regression this suite exists for", () => {
   const level0 = loadLevel(0);
-  const level1 = loadLevel(5e-4);
+  const level1 = loadLevel(1);
   const level0Runtime = composePackageSelectorRuntime(ENTRY, OCCURRENCES, { c0: level0.bundle }, {
     singleComponentPart: false
   });
@@ -133,7 +128,7 @@ test("MISmatched levels violate the invariant — the regression this suite exis
 
 test("swapCompositionBundle restores the invariant after a level swap", () => {
   const level0 = loadLevel(0);
-  const level1 = loadLevel(5e-4);
+  const level1 = loadLevel(1);
   const composition = {
     file: ENTRY.file,
     entry: ENTRY,
@@ -283,9 +278,9 @@ function placedOccurrence(index, component = "c0") {
 }
 
 test("the package composer composes exactly what recomposing every occurrence does", () => {
-  const level0 = loadLevel(0).bundle;
-  const level1 = loadLevel(0.02).bundle;
-  const revised = loadLevel(0).bundle; // the same geometry from a new file revision: a new bundle
+  const level0 = loadLevel(1).bundle;
+  const level1 = loadLevel(0).bundle;
+  const revised = loadLevel(1).bundle; // the same geometry from a new file revision: a new bundle
   const occurrences = Array.from({ length: 10 }, (_, index) => placedOccurrence(index, index % 3 ? "c0" : "c1"));
   const composer = createPackageReferenceComposer();
   const steps = [
@@ -315,14 +310,14 @@ test("the package composer composes exactly what recomposing every occurrence do
 });
 
 test("the package composer keeps the LOD picking invariant", () => {
-  const level1 = loadLevel(0.02);
+  const level1 = loadLevel(0);
   const composer = createPackageReferenceComposer();
   const runtime = composePackageSelectorRuntime(ENTRY, OCCURRENCES, { c0: level1.bundle }, { composer });
   assert.ok(faceIdInvariant(level1.meshData, runtime).ok);
 });
 
 test("the package composer builds each occurrence once and releases what stops being composed", () => {
-  const { bundle } = loadLevel(0);
+  const { bundle } = loadLevel(1);
   const occurrences = Array.from({ length: 6 }, (_, index) => placedOccurrence(index));
   const composer = createPackageReferenceComposer({ retainCompositions: 2 });
   const first = composePackageSelectorRuntime(ENTRY, occurrences.slice(0, 3), { c0: bundle }, { composer });

@@ -229,20 +229,17 @@ function code(file) {
     .join("\n");
 }
 
-test("nothing that writes bytes calls an unspecified Math function", () => {
+test("the animation runtime calls no unspecified Math function", () => {
   // These functions are implementation approximations: Node's engine and the
-  // snapshot browser's disagree on a few percent of arguments. Anything whose
-  // result is encoded into a content-addressed tessellation, or serialized into
-  // a GLB, STL or 3MF, has to avoid them — otherwise the same document exports
-  // different bytes depending on which engine ran (cadgen law 5).
+  // browser's disagree on a few percent of arguments. The runtime interpolates
+  // cadgen's baked keyframes into every pose the viewer and snapshots draw, so
+  // it keeps to exactly specified arithmetic and draws the same pose on every
+  // engine.
   //
   // Scanned as an import CLOSURE, not a list, so a new dependency is covered
   // the moment it is pulled in rather than the next time someone remembers.
-  const modules = new Set([
-    ...importClosure(new URL("../../../bin/mesh-export.mjs", import.meta.url)),
-    ...importClosure(new URL("./tessellate.js", import.meta.url)),
-  ]);
-  assert.ok(modules.size > 20, `the closure walk found only ${modules.size} modules`);
+  const modules = new Set(importClosure(new URL("../../common/animationRuntime.js", import.meta.url)));
+  assert.ok(modules.size >= 2, `the closure walk found only ${modules.size} modules`);
 
   const offenders = [];
   for (const file of modules) {

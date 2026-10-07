@@ -13,28 +13,41 @@ import { chromium } from 'playwright';
 // A STEP is the one format whose load is a conversation rather than a download:
 // the catalog names a store view, the view names components by an immutable
 // `surfaceInput`, and only `POST /__cad/surfaces` turns those inputs into the
-// object digests the `.surf` bytes are fetched by. The descriptor the real store
-// route serves is NOT materialized, so that round trip is mandatory and this
-// server implements it exactly as `client/surfaceResolution.js` validates it:
-// the returned URL must be `/__cad/store` carrying the same `tree`,
-// `surfaceInput` and a lowercase 64-hex `object`.
+// object digests the `.surf` bytes are fetched by — and, when it names a
+// tessellation, into each component's stored mesh, which cadgen makes. The
+// descriptor the real store route serves is NOT materialized, so that round
+// trip is mandatory and this server implements it exactly as
+// `client/surfaceResolution.js` validates it: the returned URL must be
+// `/__cad/store` carrying the same `tree`, `surfaceInput` and a lowercase 64-hex
+// `object`, and a requested mesh's row must be that mesh's probe row.
 
 const FIXTURE = new URL('../step/__fixtures__/step/', import.meta.url);
 
 const read = (name) => readFile(new URL(name, FIXTURE));
 
-/** Everything the fixture is, loaded once: the view, the sidecar and the surf bytes by object digest. */
+// The LOD levels the fixture stores a mesh at (`components/<cid>.l<level>.tess`).
+const MESH_LEVELS = [0, 1, 2, 3];
+
+/**
+ * Everything the fixture is, loaded once: the view, the sidecar, the surf bytes by object digest,
+ * and each component's stored meshes, decoded so the harness's store can serve them for any input.
+ */
 export async function loadStepFixture() {
+  const { decodeComponentTessellation } = await import('@text-to-cad/core/lib/surf/tessellationCache.js');
   const assembly = await read('assembly.json');
   const sidecar = JSON.parse(await read('hinge_block.step.json'));
   const view = JSON.parse(assembly);
   // `surfaceObject` is the digest of the `.surf` payload itself — the pin a real
-  // surface resolution hands back. Deriving it here keeps the fixture to the two
-  // files the client actually reads.
+  // surface resolution hands back. Deriving it here keeps the fixture to the files
+  // the client actually reads.
   const surfaces = new Map();
   for (const [cid, component] of Object.entries(view.components)) {
     const bytes = await read(`components/${cid}.surf`);
-    surfaces.set(component.surfaceInput, { cid, bytes, object: createHash('sha256').update(bytes).digest('hex') });
+    const meshes = new Map();
+    for (const level of MESH_LEVELS) {
+      meshes.set(level, decodeComponentTessellation(new Uint8Array(await read(`components/${cid}.l${level}.tess`))));
+    }
+    surfaces.set(component.surfaceInput, { cid, bytes, object: createHash('sha256').update(bytes).digest('hex'), meshes });
   }
   return { assembly, view, sidecar, surfaces, file: 'hinge_block.step' };
 }
@@ -157,46 +170,49 @@ export function reviseFixture(fixture, revision) {
 }
 
 /**
- * The shared tessellation cache as an earlier open leaves it: every component of `fixture` at the
- * standard tier, tessellated here as the viewer would and keyed and encoded as the store keeps it.
- * Answers the routes the client reads it by: a probe, a batch read and a single read.
+ * cadgen's mesh store as the harness serves it: every component of `fixture` has a mesh at each
+ * fixture LOD level, keyed and encoded as the store keeps it, for whatever input names it (a staged
+ * component shares its shape's mesh). `warm` holds every component at the standard tier already, as
+ * an earlier open leaves it; otherwise a mesh is stored once a surface request asks for it
+ * (`produce`), as cadgen meshes on request. Answers the routes the client reads it by: a probe, a
+ * batch read and a single read.
  */
-async function warmTessellationCache(fixture) {
-  const [{ parseSurf }, { tessellateComponent }, cache] = await Promise.all([
-    import('@text-to-cad/core/lib/surf/container.js'),
-    import('@text-to-cad/core/lib/surf/tessellate.js'),
+async function meshStore(fixture, { warm = false } = {}) {
+  const [cache, { encodeTessFixture }, { lodTessellationForLevel }] = await Promise.all([
     import('@text-to-cad/core/lib/surf/tessellationCache.js'),
+    import('@text-to-cad/core/lib/surf/testing.js'),
+    import('@text-to-cad/core/lib/surf/lodPolicy.js'),
   ]);
-  const entries = new Map();
-  const tessellated = new Map();
-  for (const component of Object.values(fixture.view.components)) {
-    const surface = fixture.surfaces.get(component.surfaceInput);
-    if (!tessellated.has(surface.object)) {
-      const bytes = surface.bytes;
-      const { index, floats } = parseSurf(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
-      tessellated.set(surface.object, { index, mesh: tessellateComponent(index, floats, {}) });
+  const stored = new Map();
+  const produce = (surfaceInput, tessellation = {}) => {
+    const surface = fixture.surfaces.get(surfaceInput);
+    if (!surface) return null;
+    const key = cache.tessellationCacheKey(surfaceInput, tessellation);
+    if (!stored.has(key)) {
+      // The fixture level these tolerances name, else the standard tier's shape under their key.
+      const level = MESH_LEVELS.find(candidate => cache.tessellationCacheKey(surfaceInput, lodTessellationForLevel(candidate) || {}) === key) ?? 1;
+      const { component, partColor, edgeClasses } = surface.meshes.get(level);
+      const bytes = encodeTessFixture(component, { surfaceInput, surfaceObject: surface.object, tessellation, partColor, edgeClasses });
+      const row = cache.validateTessellationProbeRow({ schemaVersion: 1,
+        object: createHash('sha256').update(bytes).digest('hex'), ...cache.tessellationPayloadFacts(bytes) });
+      stored.set(key, { bytes: Buffer.from(bytes), row });
     }
-    const { index, mesh } = tessellated.get(surface.object);
-    const bytes = cache.encodeComponentTessellation(mesh, {
-      surfaceInput: component.surfaceInput, surfaceObject: surface.object, tessellation: {},
-      partColor: Array.isArray(index.partColor) ? index.partColor : null, edgeClasses: cache.edgeClassesFromSurfIndex(index),
-    });
-    const row = cache.validateTessellationProbeRow({ schemaVersion: 1,
-      object: createHash('sha256').update(bytes).digest('hex'), ...cache.tessellationPayloadFacts(bytes) });
-    entries.set(cache.tessellationCacheKey(component.surfaceInput, {}), { bytes: Buffer.from(bytes), row });
-  }
+    return stored.get(key).row;
+  };
+  if (warm) for (const component of Object.values(fixture.view.components)) produce(component.surfaceInput);
   const binary = (response, bytes) => {
     response.setHeader('Content-Type', 'application/octet-stream');
     response.setHeader('Content-Length', String(bytes.byteLength));
     response.end(bytes);
   };
   return {
-    probe: keys => ({ entries: Object.fromEntries(keys.filter(key => entries.has(key)).map(key => [key, entries.get(key).row])) }),
+    produce,
+    probe: keys => ({ entries: Object.fromEntries(keys.filter(key => stored.has(key)).map(key => [key, stored.get(key).row])) }),
     batch: (response, requested) => binary(response, Buffer.from(cache.encodeTessellationCacheBatch(requested.map(({ tessellationInput, object }) => {
-      const entry = entries.get(tessellationInput);
+      const entry = stored.get(tessellationInput);
       return entry?.row.object === object ? entry.bytes : null;
     })))),
-    read: (response, key) => { const entry = entries.get(key); if (entry) { binary(response, entry.bytes); return true; } return false; },
+    read: (response, key) => { const entry = stored.get(key); if (entry) { binary(response, entry.bytes); return true; } return false; },
   };
 }
 
@@ -265,14 +281,14 @@ function harnessBundle() {
  *   `release(gate)` is called, so the package's three publishes are a test's to place
  *   rather than a race; `declare(false)` then serves its descriptor without the `bbox` it
  *   declares. `singlePart` serves the base alone as a cadgen single-part STEP
- *   (`stageSinglePartFixture`), its part named by an XCAF label entry. `warmCache` serves a shared
- *   tessellation cache that already holds every component (`warmTessellationCache`); without it
- *   the cache is cold, and every probe and read of it is a 404.
+ *   (`stageSinglePartFixture`), its part named by an XCAF label entry. `warmCache` serves a mesh
+ *   store that already holds every component at the standard tier (`meshStore`); without it the
+ *   store is cold, and a component's mesh is made when its surface request asks for it.
  */
 export async function serveStepHarness(t, { onRequest, progressive = false, singlePart = false, warmCache = false } = {}) {
   const loaded = await loadStepFixture();
   const fixture = progressive ? stageProgressiveFixture(loaded) : singlePart ? stageSinglePartFixture(loaded) : loaded;
-  const tessellationCache = warmCache ? await warmTessellationCache(fixture) : null;
+  const meshes = await meshStore(fixture, { warm: warmCache });
   const entry = stepCatalogEntry(fixture);
   // The file as the catalog lists it now (`revise`), and every revision a page may still ask
   // for, by its tree.
@@ -321,7 +337,8 @@ export async function serveStepHarness(t, { onRequest, progressive = false, sing
           const surface = fixture.surfaces.get(surfaceInput);
           if (!surface) return [cid, { surfaceInput, state: 'failed', error: `unknown surface input for ${cid}` }];
           return [cid, { surfaceInput, state: 'ready', surfaceObject: surface.object, byteLength: surface.bytes.length,
-            url: `/__cad/store?tree=${shown.view.tree}&surfaceInput=${surfaceInput}&object=${surface.object}` }];
+            url: `/__cad/store?tree=${shown.view.tree}&surfaceInput=${surfaceInput}&object=${surface.object}`,
+            ...(body.tessellation ? { mesh: meshes.produce(surfaceInput, body.tessellation) } : {}) }];
         })),
       });
       return;
@@ -332,8 +349,8 @@ export async function serveStepHarness(t, { onRequest, progressive = false, sing
         const surface = [...fixture.surfaces.values()].find(entry => entry.object === object);
         if (!surface) { notFound(response); return; }
         // Held by INPUT, not by object: identical components share one object, and it is
-        // one component's download that waits. Only the BODY waits, so a metadata probe
-        // still answers and the component is slow rather than unsizeable.
+        // one component's download that waits (selectors read it; display reads the mesh,
+        // held where the mesh store answers).
         const gate = fixture.heldInputs?.get(url.searchParams.get('surfaceInput'));
         if (gate && request.method !== 'HEAD') await gates[gate];
         response.setHeader('Content-Type', 'application/octet-stream');
@@ -349,19 +366,29 @@ export async function serveStepHarness(t, { onRequest, progressive = false, sing
       }
       notFound(response); return;
     }
-    if (tessellationCache && url.pathname.endsWith('/__tess_cache/probe')) {
-      json(response, tessellationCache.probe((await readBody(request)).tessellationInputs || []));
+    if (url.pathname.endsWith('/__tess_cache/probe')) {
+      json(response, meshes.probe((await readBody(request)).tessellationInputs || []));
       return;
     }
-    if (tessellationCache && url.pathname.endsWith('/__tess_cache/batch')) {
-      tessellationCache.batch(response, (await readBody(request)).entries || []);
+    if (url.pathname.endsWith('/__tess_cache/batch')) {
+      const entries = (await readBody(request)).entries || [];
+      // A warm reopen reads its meshes in batches: a batch carrying a held component waits too.
+      for (const gate of new Set(entries.map(entry => fixture.heldInputs?.get(String(entry?.tessellationInput).slice(0, 64))).filter(Boolean))) {
+        await gates[gate];
+      }
+      meshes.batch(response, entries);
       return;
     }
-    if (tessellationCache && request.method === 'GET' && url.pathname.endsWith('.tess')
-      && tessellationCache.read(response, decodeURIComponent(url.pathname.split('/__tess_cache/')[1].slice(0, -'.tess'.length)))) return;
-    // A cold cache: the tessellation cache probes and writes back, and a clean
-    // 404 is what "nothing warm here" looks like. Falling through to the HTML
-    // shell instead makes the probe throw on a page that is not JSON.
+    if (request.method === 'GET' && url.pathname.endsWith('.tess')) {
+      const key = decodeURIComponent(url.pathname.split('/__tess_cache/')[1].slice(0, -'.tess'.length));
+      // A cold component's display waits on its mesh, so that is the body a staged batch holds:
+      // by INPUT, as identical components share one mesh's geometry.
+      const gate = fixture.heldInputs?.get(key.slice(0, 64));
+      if (gate) await gates[gate];
+      if (meshes.read(response, key)) return;
+    }
+    // A mesh the store does not hold: a clean 404, never the HTML shell, which a
+    // reader would fail to parse.
     if (url.pathname.includes('/__tess_cache/')) { notFound(response); return; }
     if (url.pathname.endsWith(`/${fixture.file}.json`)) { if (current.sidecar) json(response, current.sidecar); else notFound(response); return; }
     if (/\.(woff2|ttf)$/.test(url.pathname)) { notFound(response); return; }
@@ -389,8 +416,8 @@ export async function serveStepHarness(t, { onRequest, progressive = false, sing
     page.setDefaultTimeout(timeout);
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
-    // No Worker: the surf tessellator falls back to the main thread, which is
-    // what `renderAssetClient` does for a host without one.
+    // No Worker: mesh decoding falls back to the main thread, which is what
+    // `renderAssetClient` does for a host without one.
     await page.addInitScript(() => { window.Worker = undefined; window.__cadPreviewChromeIdleMs = 5000; });
     if (record) await page.addInitScript(stored => { window.__cadTabRecord = stored; }, record);
     // A script of the test's own that must run before the app does (a render counter on

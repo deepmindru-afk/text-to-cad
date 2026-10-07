@@ -39,7 +39,7 @@ from .scanner import CAD_CATALOG_SCHEMA_VERSION, SOURCE_EXTENSIONS, catalog_entr
 from .store_paths import virtual_store_asset
 from .tess_cache import (
     TESS_CACHE_METADATA_MAX_BYTES, parse_tess_cache_admission,
-    read_tess_cache_batch, read_tess_cache_entry, read_tess_cache_probe, write_tess_cache_entry,
+    read_tess_cache_batch, read_tess_cache_entry, read_tess_cache_probe,
 )
 
 __all__ = [
@@ -465,7 +465,7 @@ class CadApp:
             if self._rejected_by_host_check(request, response):
                 return
             if pathname.startswith(TESS_CACHE_ROUTE_PREFIX):
-                # Shared component-tessellation cache. Checked BEFORE the dist
+                # The store's component meshes. Checked BEFORE the dist
                 # fallthrough: this is an API family, not a page asset.
                 self._handle_tess_get(request, response)
                 return
@@ -607,7 +607,8 @@ class CadApp:
                     # matches both.
                     self._handle_tess_batch(request, response)
                 elif pathname.startswith(TESS_CACHE_ROUTE_PREFIX):
-                    self._handle_tess_post(request, response)
+                    # cadgen writes every mesh: a client reads them.
+                    response.send_empty(405, [("allow", "GET")])
                 else:
                     response.send_empty(405, [("allow", "POST")])
             except Exception as error:  # noqa: BLE001
@@ -846,9 +847,6 @@ class CadApp:
             response.send_empty(status)
             return
         response.send_bytes(200, body, "application/octet-stream")
-
-    def _handle_tess_post(self, request, response):
-        response.send_empty(write_tess_cache_entry(request.path, request.body()))
 
     def _handle_tess_probe(self, request, response):
         if int(request.headers.get("content-length") or 0) > TESS_CACHE_METADATA_MAX_BYTES:

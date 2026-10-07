@@ -303,7 +303,6 @@ export function createCadClient({ origin = '', fetch: fetchImpl = globalThis.fet
       const releases = [retainSurfWorkerPool(), retainGlbMeshWorker(), retainStlMeshWorker()];
       tessellationCache ??= createTessellationCache({
         provider: createHttpTessellationCacheProvider({ origin, headers: { 'x-cadgen-viewer': '1' }, fetch: fetchImpl, maxBatchBytes }),
-        writeBack: { deferMs: 1500, concurrency: 2 }
       });
       const cache = tessellationCache.createSession({ signal: controller.signal });
       let sessionDisposed = false;

@@ -721,7 +721,7 @@ class EveryRouteAnswersForReal(HttpLayerTestCase):
 
         fixture = tessellation_fixture()
         payload = base64.b64decode(fixture["bytes"])
-        with mock.patch.dict(os.environ, {"CADGEN_CACHE_DIR": str(Path(self.fixture.root) / "store"), "CADGEN_MESH_CACHE": "1"}):
+        with mock.patch.dict(os.environ, {"CADGEN_CACHE_DIR": str(Path(self.fixture.root) / "store")}):
             row = meshes.write(fixture["key"], payload)
             status, _, body = self.fixture.request("POST", "/__tess_cache/probe", headers={"x-cadgen-viewer": "1"},
                                                  body=json.dumps({"tessellationInputs": [fixture["key"]]}).encode())
@@ -730,6 +730,11 @@ class EveryRouteAnswersForReal(HttpLayerTestCase):
             route = f"/__tess_cache/{fixture['key']}.tess?object={row['object']}&maxBytes={row['byteLength']}"
             status, _, body = self.fixture.request("GET", route)
             self.assertEqual((status, body), (200, payload))
+            # cadgen writes every mesh: a client's write is refused, and changes nothing.
+            status, headers, _ = self.fixture.request("POST", f"/__tess_cache/{fixture['key']}.tess",
+                                                      headers={"x-cadgen-viewer": "1"}, body=payload)
+            self.assertEqual(status, 405)
+            self.assertEqual(meshes.probe(fixture["key"]), row)
 
     def test_no_route_reports_itself_as_unported(self):
         # This class used to list the routes still awaiting their step, each

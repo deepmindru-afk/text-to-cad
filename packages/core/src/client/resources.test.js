@@ -131,8 +131,15 @@ test('an issued URL worker ticket cannot publish after its resource generation r
     terminate(){}
   };
   t.after(()=>{globalThis.Worker=original;});
+  // A surf request carries its component's stored mesh; the resource is its SURF, for selectors.
+  const { encodeTessFixture } = await import('../lib/surf/__tests__/meshFixtures.js');
+  const identity = { surfaceInput: 'd'.repeat(64), surfaceObject: 'e'.repeat(64) };
+  const entry = encodeTessFixture({ positions: new Float32Array(9), normals: new Float32Array(9), faceOrds: new Float32Array([1, 1, 1]),
+    indices: new Uint32Array([0, 1, 2]), faceRanges: [{ ord: 1, color: null, indexStart: 0, indexCount: 3 }], edges: [],
+    bounds: { min: [0, 0, 0], max: [0, 0, 0] }, scale: 1 }, identity);
+  const loadSurf = (url, options) => surf.loadSurfComponentInWorker(url, { ...options, identity: { ...identity, tessellationEntry: entry.slice() } });
   for (const [load,retain] of [[glb.loadGlbMeshDataInWorker,glb.retainGlbMeshWorker],
-    [stl.loadStlMeshDataInWorker,stl.retainStlMeshWorker], [surf.loadSurfComponentInWorker,surf.retainSurfWorkerPool]]) {
+    [stl.loadStlMeshDataInWorker,stl.retainStlMeshWorker], [loadSurf,surf.retainSurfWorkerPool]]) {
     const lifetime = new AbortController();
     const resources = scopeCadResources(createHttpCadResourceProvider({origin:'https://cad.test'}),lifetime.signal);
     const release=retain();

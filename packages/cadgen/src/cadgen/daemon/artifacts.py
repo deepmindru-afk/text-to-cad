@@ -79,13 +79,15 @@ def normalize_request(request):
     force = request.get("force", False)
     if type(force) is not bool:
         raise ValueError("artifact force must be a boolean")
-    from cadgen.store.surfaces import normalize_tessellations
+    from cadgen.store.meshes import normalize_tessellations
 
+    # The meshes to make with the surfaces, in one canonical spelling; a request
+    # naming none keeps the shape (and key) it always had.
     tessellations = [{"chordTolerance": chord, "angleTolerance": angle}
                      for chord, angle in normalize_tessellations(request.get("tessellations"))]
     return {"kind": kind, "tree": _digest(request["tree"], "tree"), "cids": sorted(cids),
             "producer": _producer(request["producer"]), "expected_objects": dict(sorted(expected.items())), "force": force,
-            "tessellations": tessellations}
+            **({"tessellations": tessellations} if tessellations else {})}
 
 
 def request_key(request):
@@ -145,9 +147,10 @@ def execute(request, *, keep_going=None):
 
     if request["kind"] == "producer":
         return surfaces.producer_identity()
+    meshes = {"tessellations": request["tessellations"]} if request.get("tessellations") else {}
     return surfaces.derive(request["tree"], request["cids"], producer=request["producer"],
                            expected_objects=request["expected_objects"], force=request["force"],
-                           keep_going=keep_going, tessellations=request["tessellations"])
+                           keep_going=keep_going, **meshes)
 
 
 class ArtifactFuture(Future):

@@ -150,7 +150,8 @@ class ArtifactRequests(unittest.TestCase):
         self.assertEqual(normalized, surface_request())
         for change in ({"tree": "f" * 64}, {"cids": ["b" * 16]}, {"producer": {**PRODUCER, "ocp": "new"}},
                        {"producer": {**PRODUCER, "cadqueryOcp": "other"}}, {"force": True},
-                       {"expected_objects": {"d" * 64: "f" * 64}}, {"expected_objects": {"f" * 64: "e" * 64}}):
+                       {"expected_objects": {"d" * 64: "f" * 64}}, {"expected_objects": {"f" * 64: "e" * 64}},
+                       {"tessellations": [{"chordTolerance": 5e-4, "angleTolerance": 0.35}]}):
             with self.subTest(change=change):
                 self.assertNotEqual(key, artifacts.request_key(surface_request(**change)))
 
@@ -160,7 +161,9 @@ class ArtifactRequests(unittest.TestCase):
                    surface_request(cids=["B" * 16]), surface_request(cids=["b" * 16] * 2),
                    surface_request(force=1), surface_request(expected_objects={"short": "e" * 64}),
                    surface_request(producer={**PRODUCER, "ocp": "unknown"}),
-                   surface_request(producer={**PRODUCER, "scheme": True})]
+                   surface_request(producer={**PRODUCER, "scheme": True}),
+                   surface_request(tessellations=[{"chordTolerance": 5e-4}]),
+                   surface_request(tessellations=[{"chordTolerance": 1e-9, "angleTolerance": 0.35}])]
         with mock.patch.object(client, "run_artifact") as dispatch:
             for request in invalid:
                 with self.subTest(request=request), self.assertRaises(ValueError):

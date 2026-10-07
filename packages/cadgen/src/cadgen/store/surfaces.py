@@ -8,6 +8,7 @@ from functools import lru_cache
 from typing import Any, Callable
 
 from cadgen.store.index import read_entry, write_entry
+from cadgen.store.meshes import normalize_tessellations
 from cadgen.store.objects import put_object, read_verified_object
 
 EXTRACTION_SCHEME = 19
@@ -179,24 +180,6 @@ def lookup(entry: dict, producer: dict) -> dict | None:
     return actual
 
 
-def normalize_tessellations(value: Any) -> list[tuple[float, float]]:
-    """``[{chordTolerance, angleTolerance}, ...]`` as sorted, distinct (chord, angle) pairs."""
-    from cadgen.store.meshes import tessellation_quality
-
-    if value is None:
-        return []
-    if type(value) not in (list, tuple):
-        raise ValueError("tessellations must be a list of {chordTolerance, angleTolerance}")
-    pairs = set()
-    for item in value:
-        if type(item) is not dict or set(item) != {"chordTolerance", "angleTolerance"}:
-            raise ValueError("a tessellation is exactly {chordTolerance, angleTolerance}")
-        chord, angle = item["chordTolerance"], item["angleTolerance"]
-        tessellation_quality(chord, angle)  # positive finite binary64 values, or ValueError
-        pairs.add((float(chord), float(angle)))
-    return sorted(pairs)
-
-
 def mesh_records(entry: dict, producer: dict, tessellations) -> dict[str, dict | None]:
     """The stored mesh index record of each tessellation of one component, None where absent."""
     from cadgen.store import meshes
@@ -206,7 +189,7 @@ def mesh_records(entry: dict, producer: dict, tessellations) -> dict[str, dict |
             (meshes.tessellation_key(surface_key, chord, angle) for chord, angle in normalize_tessellations(tessellations))}
 
 
-def _derive_meshes(entry: dict, surface: dict, producer: dict, tessellations: list[tuple[float, float]],
+def _derive_meshes(entry: dict, surface: dict, tessellations: list[tuple[float, float]],
                    keep_going: Callable[[], bool] | None) -> bool:
     """Mesh one component at each missing tessellation; False when told to stop."""
     from cadgen._internal.component_package import decode_display_shape
@@ -231,6 +214,45 @@ def _derive_meshes(entry: dict, surface: dict, producer: dict, tessellations: li
                               surface_object=surface["object"], chord=chord, angle=angle)
         meshes.write(meshes.tessellation_key(surface_key, chord, angle), body)
     return True
+
+
+def _geometry_entry(surface: dict) -> dict:
+    """The geometry input a verified surface record was derived from (its BREP and recipe)."""
+    entry = {"kind": "native", "contentHash": surface["component"], "brep": surface["brep"],
+             "codec": surface["codec"], "faceColors": surface["faceColors"]}
+    if surface["producer"] is None:
+        entry.update(kind="eager-only", eagerSurface=surface["object"])
+    return entry
+
+
+def produce_meshes(keys: list[str], *, keep_going: Callable[[], bool] | None = None) -> dict[str, dict | None]:
+    """Each tessellation key's mesh index record, meshing the keys the store lacks.
+
+    A key names its surface input, and the surface record that input indexes
+    names the BREP it was derived from: all meshing needs, with no tree. A key
+    whose surface the store does not hold (never derived, or reclaimed), or
+    that asks for tolerances finer than any request may, answers None.
+    """
+    from cadgen.store import meshes
+
+    result: dict[str, dict | None] = {}
+    for key in keys:
+        record = meshes.probe(key)
+        parsed = meshes.parse_key(key) if record is None else None
+        if parsed is not None:
+            surface_key, chord, angle = parsed
+            surface = read_entry("surface", surface_key)
+            try:
+                normalize_tessellations([{"chordTolerance": chord, "angleTolerance": angle}])
+                validate_surface_record(surface, surface_input_key=surface_key)
+            except (OSError, ValueError, TypeError, KeyError, struct.error):
+                surface = None
+            if surface is not None:
+                if not _derive_meshes(_geometry_entry(surface), surface, [(chord, angle)], keep_going):
+                    break
+                record = meshes.probe(key)
+        result[key] = record
+    return result
 
 
 def derive(tree_hash: str, cids: list[str] | None = None, *, force: bool = False,
@@ -295,7 +317,7 @@ def derive(tree_hash: str, cids: list[str] | None = None, *, force: bool = False
         # A hit is a read and writes nothing (STORE.md §8).
         if actual != prior:
             write_entry("surface", expected["surfaceInput"], actual)
-        if tessellations and not _derive_meshes(entry, actual, producer, tessellations, keep_going):
+        if tessellations and not _derive_meshes(entry, actual, tessellations, keep_going):
             break
         result[cid] = actual
     return result

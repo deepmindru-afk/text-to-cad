@@ -1,15 +1,15 @@
-"""Transport-neutral access to the shared component-tessellation cache.
+"""Transport-neutral access to the store's component meshes.
 
-The cache is the ``mesh`` index defined by :mod:`cadgen.store.meshes`. This
+The meshes are the ``mesh`` index defined by :mod:`cadgen.store.meshes`. This
 module owns the bounded probe/body protocol and TESB framing used by both the
-snapshot host and the Viewer. URI decoding and HTTP status codes stay in the
-hosts, so store and snapshot code never import ``cadgen.viewer``.
+snapshot host and the Viewer, and the snapshot host's produce request. Clients
+only read: cadgen writes every mesh. URI decoding and HTTP status codes stay in
+the hosts, so store and snapshot code never import ``cadgen.viewer``.
 """
 
 from __future__ import annotations
 
 import json
-import os
 import re
 import struct
 from collections.abc import Iterable
@@ -19,9 +19,8 @@ __all__ = [
     "TESS_CACHE_BATCH_MAX_NAMES", "TESS_CACHE_BATCH_VERSION",
     "TESS_CACHE_METADATA_MAX_BYTES", "encode_tessellation_cache_batch",
     "is_tessellation_cache_key", "parse_tess_cache_admission",
-    "read_tess_cache_batch", "read_tess_cache_probe",
+    "produce_tess_cache", "read_tess_cache_batch", "read_tess_cache_probe",
     "read_tessellation_cache", "tessellation_cache_dir",
-    "tessellation_cache_enabled", "write_tessellation_cache",
 ]
 
 TESS_CACHE_BATCH_MAGIC = 0x42534554  # "TESB" little-endian
@@ -29,10 +28,6 @@ TESS_CACHE_BATCH_VERSION = 1
 TESS_CACHE_BATCH_MAX_NAMES = 256
 TESS_CACHE_BATCH_MAX_BYTES = 32 * 1024 * 1024
 TESS_CACHE_METADATA_MAX_BYTES = 256 * 1024
-
-
-def tessellation_cache_enabled() -> bool:
-    return os.environ.get("CADGEN_MESH_CACHE") != "0"
 
 
 def tessellation_cache_dir() -> str:
@@ -68,25 +63,11 @@ def read_tessellation_cache(
 ) -> bytes | None:
     """Read one verified body, optionally bound to a probe's exact facts."""
     key = _validated_key(key)
-    if not tessellation_cache_enabled():
-        return None
     try:
         from cadgen.store.meshes import read
         return read(key, expected_object=expected_object, max_bytes=max_bytes)
     except (OSError, ValueError):
         return None
-
-
-def write_tessellation_cache(key: str, data: bytes) -> None:
-    """Best-effort publish of one verified immutable TESS v4 body."""
-    key = _validated_key(key)
-    if not data or not tessellation_cache_enabled():
-        return
-    try:
-        from cadgen.store.meshes import write
-        write(key, bytes(data))
-    except OSError:
-        pass
 
 
 def encode_tessellation_cache_batch(entries: Iterable[bytes | None]) -> bytes:
@@ -116,7 +97,7 @@ def _request_items(body: bytes | None, field: str) -> list | None:
 
 
 def read_tess_cache_probe(body: bytes | None) -> dict | None:
-    """Return bounded v4 index facts without loading a TESS or SURF body."""
+    """Return bounded index facts without loading a TESS or SURF body."""
     from cadgen.store.meshes import probe
     inputs = _request_items(body, "tessellationInputs")
     if inputs is None:
@@ -127,6 +108,20 @@ def read_tess_cache_probe(body: bytes | None) -> dict | None:
         if row is not None:
             entries[key] = row
     return {"entries": entries}
+
+
+def produce_tess_cache(body: bytes | None) -> dict | None:
+    """Mesh what a probe found missing, and answer as the probe would.
+
+    In-process kernel work: only a host that may mesh on its own thread -- the
+    snapshot host -- serves this. A key whose surface the store does not hold
+    stays missing.
+    """
+    from cadgen.store.surfaces import produce_meshes
+    inputs = _request_items(body, "tessellationInputs")
+    if inputs is None or any(type(key) is not str for key in inputs):
+        return None
+    return {"entries": {key: row for key, row in produce_meshes(inputs).items() if row is not None}}
 
 
 def read_tess_cache_batch(body: bytes | None) -> bytes | None:

@@ -301,10 +301,9 @@ export async function loadRenderSurf(url, {
   memoryEstimateBytes,
   tessellationCache,
 } = {}) {
-  // Exact-surface component artifact (design/surface-rendering.md): the
-  // worker builds only the display payload. A compatible shared-cache entry
-  // contains geometry, display edges, bounds and appearance, so this path can
-  // skip both selector construction and the .surf request.
+  // The worker builds only the display payload. A stored mesh carries
+  // geometry, display edges, bounds and appearance, so this path skips both
+  // selector construction and the .surf request.
   const cacheKey = surfTessellationCacheKey(url, tessellation, identity);
   const meshData = await loadCached(glbCache, cacheKey, async () => {
     return (await loadSurfPayload(url, {
@@ -824,59 +823,41 @@ async function loadSurfPayloadInline(url, { signal, resources, tessellation, ide
       surfIndexFromCacheEntry,
       tessellationCacheKey,
     },
-    { tessellateComponent },
     { buildMeshDataFromSurf },
     { buildSelectorBundleFromSurf },
   ] = await Promise.all([
     import("./surf/container.js"),
     import("./surf/tessellationCache.js"),
-    import("./surf/tessellate.js"),
     import("./surf/surfMeshData.js"),
     import("./surf/surfSelectorBundle.js"),
   ]);
   const surfaceInput = String(identity?.surfaceInput || "");
   const surfaceObject = String(identity?.surfaceObject || "");
+  const probe = identity?.tessellationProbe || null;
   // As the worker path takes them (`loadSurfComponentInWorker`): bytes a batched read already
-  // verified for this probe, or the caller's word that the tier was probed and holds nothing.
+  // verified for this probe, else this tier's entry read here. cadgen produces every mesh; one
+  // the store does not hold is a probe miss, which the caller answers by asking for it.
   const readEntry = identity?.tessellationEntry instanceof Uint8Array ? identity.tessellationEntry : null;
-  const strictProbe = Boolean(identity?.tessellationProbe);
-  if (!tessellationCache && strictProbe && !readEntry) throw new TessellationCacheProbeMissError(identity.tessellationProbe);
-  let cached = null;
-  if (readEntry) {
-    cached = decodeComponentTessellation(readEntry, {
+  const cached = readEntry
+    ? decodeComponentTessellation(readEntry, {
       surfaceInput, ...(surfaceObject ? { surfaceObject } : {}),
       tessellationInput: tessellationCacheKey(surfaceInput, tessellation || {}), tessellation: tessellation || {},
+    })
+    : await tessellationCache?.getCachedComponentEntry(surfaceInput, tessellation || {}, {
+      signal, probe, strictProbe: true,
     });
-    if (!cached && strictProbe) throw new TessellationCacheProbeMissError(identity.tessellationProbe);
-  } else if (strictProbe || identity?.tessellationProbed !== true) {
-    cached = await tessellationCache?.getCachedComponentEntry(surfaceInput, tessellation || {}, {
-      signal,
-      probe: identity?.tessellationProbe || null,
-      strictProbe,
-    });
-  }
-  const cachedIndex = surfIndexFromCacheEntry(cached);
-  // Render-only cache hits are complete without the exact-surface container.
-  // Selectors need its topology tables; incomplete older entries do too.
-  if (capabilities.render && !capabilities.selectors && cached && cachedIndex) {
-    return {
-      meshData: buildMeshDataFromSurf(cachedIndex, null, { component: cached.component }),
-    };
+  if (!cached) throw new TessellationCacheProbeMissError(probe);
+  // Drawing needs only the mesh; selectors also need the SURF's topology tables.
+  if (!capabilities.selectors) {
+    return { meshData: buildMeshDataFromSurf(surfIndexFromCacheEntry(cached), cached.component) };
   }
   if (!url) throw new Error("Exact SURF bytes are not ready for this component");
   const buffer = await loadRenderArrayBuffer(url, { signal, resources });
   assertNotGitLfsPointer(buffer, url, "SURF render asset");
-  const { index, floats } = parseSurf(buffer);
-  // Same shared-cache behavior as the worker path: a registered provider
-  // turns a content-addressed component into a cache hit (tessellation
-  // skipped) or a write-back; no provider tessellates exactly as before.
-  const component = cached?.component || tessellateComponent(index, floats, tessellation || {});
-  if (!cached || !cachedIndex) {
-    await tessellationCache?.writeBackComponentEntry(surfaceInput, surfaceObject, tessellation || {}, component, index);
-  }
+  const { index } = parseSurf(buffer);
   return {
-    ...(capabilities.render ? { meshData: buildMeshDataFromSurf(index, floats, { component }) } : {}),
-    ...(capabilities.selectors ? { bundle: buildSelectorBundleFromSurf(index, floats, { component }) } : {}),
+    ...(capabilities.render ? { meshData: buildMeshDataFromSurf(index, cached.component) } : {}),
+    bundle: buildSelectorBundleFromSurf(index, cached.component),
   };
 }
 
@@ -902,9 +883,9 @@ async function loadSurfPayload(url, {
       tessellationCache,
     });
     if (workerPayload) {
-      // Once a worker accepts the job, keep expensive tessellation off the UI
-      // thread even when that job fails. Propagate the failure; inline is only
-      // the compatibility path for environments where Workers never started.
+      // Once a worker accepts the job, keep decoding and selector building off
+      // the UI thread even when that job fails. Propagate the failure; inline
+      // is only the path for environments where Workers never started.
       return workerPayload;
     }
     return loadSurfPayloadInline(url, { signal, resources, tessellation, identity, capabilities, tessellationCache });

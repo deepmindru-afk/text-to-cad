@@ -1,22 +1,16 @@
-"""Where the store lives — ONE resolution rule, honored by both languages.
+"""Where the store lives — ONE resolution rule.
 
 1. ``$CADGEN_CACHE_DIR`` when set — the explicit override.
 2. ``$XDG_CACHE_HOME/cadgen`` on POSIX / ``%LOCALAPPDATA%\\cadgen`` on Windows when set.
 3. ``~/.cache/cadgen`` otherwise.
 
-The JS mirror is ``cadgenCacheRootDir`` in
-``packages/core/src/lib/surf/tessellationCacheFs.mjs``;
-``tests/python/global/test_cache_root_sync.py`` pins the two together.
+Only cadgen opens the store; every client reaches it through a host's routes.
 """
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
-
-# Mirror of TESSELLATION_VERSION in packages/core/src/lib/surf/tessellate.js
-# (sync-tested). It is part of the MESH index key, not a store salt.
-MESH_TESSELLATION_VERSION = 9
 
 # "document" is the ARTIFACT side (sha256 of a file's bytes → its tree); every
 # other kind is the code/dependency side. STORE.md §2, the law.

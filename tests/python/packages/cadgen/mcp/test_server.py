@@ -522,9 +522,9 @@ class TunnelBoundTest(_Session):
         body = base64.b64decode(fixture["bytes"])
         digest = fixture["facts"]["object"]
         with mock.patch.dict(os.environ, {"CADGEN_CACHE_DIR": str(self.tmp / "store")}):
-            from cadgen.store.tess_cache import write_tessellation_cache
+            from cadgen.store import meshes
 
-            write_tessellation_cache(fixture["key"], body)
+            meshes.write(fixture["key"], body)
             whole, sizes, etags = self.read(f"http://cad.invalid/__tess_cache/{fixture['key']}.tess?object={digest}&maxBytes={len(body)}", part=256)
         self.assertEqual((whole, etags), (body, {f'"{digest}"'}))
         self.assertGreaterEqual(len(sizes), 3)

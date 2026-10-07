@@ -7,14 +7,10 @@
 // `Math.sin` calls, ~2.8% of `Math.cos`, ~7.6% of `Math.acos` and ~17% of
 // `Math.atan2`.
 //
-// Both engines tessellate the same components into the same content-addressed
-// mesh store (one key per component + tolerances), and the exported GLB / STL /
-// 3MF bytes are that tessellation. So an unspecified libm makes a document's
-// exported bytes depend on WHICH engine reached the store first — a viewer or
-// `cadgen step snapshot` warming the cache changed the GLB a later
-// `cadgen glb build` wrote. That is cadgen law 5 (byte determinism); a
-// tessellator that is shared by render and export has to be bit-identical in
-// every engine that runs it.
+// The animation runtime interpolates cadgen's baked keyframes into every pose
+// the viewer and snapshots draw, in whichever engine runs the page; with an
+// unspecified libm the same clip at the same time could pose a part
+// differently from one engine to the next.
 //
 // WHAT IT IS. The fdlibm/msun kernels — the same algorithm V8 itself ports —
 // written in plain JavaScript. Every operation here is `+`, `-`, `*`, `/` or a
@@ -22,20 +18,15 @@
 // exactly, so the result is the same on every engine and platform. Accuracy is
 // fdlibm's: under 1 ulp, and exact where the kernels are (`sin(0)`, `cos(0)`).
 //
-// WHERE IT IS USED. Everything whose output reaches bytes cadgen writes or
-// content-addresses: `evaluate.js` and `tessellate.js` on the way into a stored
-// tessellation, and `common/tubeDeformation.js` plus `lib/export/*` and
-// `lib/glb/writeGlb.js` on the way out into a GLB, STL or 3MF. Callers whose
-// results never leave the process — view-dependent LOD, UI, diagnostics — may
-// keep using `Math`.
+// WHERE IT IS USED. `common/animationRuntime.js`. Callers whose results are
+// view-dependent and never reproduced — LOD, UI, diagnostics — may keep using
+// `Math`.
 //
-// The other `Math` functions these paths use are safe by specification:
-// `sqrt` is correctly rounded, and `abs`/`min`/`max`/`round`/`floor`/`ceil`/
-// `trunc`/`sign` are exact. `Math.hypot` and `Math.pow` are not specified to
-// any accuracy either — the two engines happened to agree on all 20000 sample
-// arguments of each — but those paths use `Math.sqrt` of the sum of squares and
-// plain multiplication instead, so no unspecified function survives anywhere
-// the bytes come from. `trig.test.js` is what keeps it that way.
+// The other `Math` functions it uses are safe by specification: `sqrt` is
+// correctly rounded, and `abs`/`min`/`max`/`round`/`floor`/`ceil`/`trunc`/
+// `sign` are exact. `Math.hypot` and `Math.pow` are not specified to any
+// accuracy either, so the runtime uses `Math.sqrt` of the sum of squares and
+// plain multiplication instead. `trig.test.js` is what keeps it that way.
 
 // fdlibm __kernel_sin coefficients.
 const S1 = -1.66666666666666324348e-01;

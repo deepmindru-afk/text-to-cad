@@ -1,17 +1,14 @@
-// meshData from a .surf container (design/surface-rendering.md R2/R5).
+// meshData from a component's stored mesh (cadgen/store/meshes.py).
 //
 // Produces the structure buildMeshDataFromGlbBuffer produced from a component
 // GLB, so everything downstream — package composition, themes, selection
-// ranges — is untouched by the artifact swap. Geometry is tessellated
-// client-side from exact surfaces (grid + clip, curvature-driven), in CAD
-// units, and handed on INDEXED: the tessellator's shared vertices, normals and
-// index buffer are the render buffers, never expanded per corner. CAD edges
-// ride beside the triangles as indexed line segments built from the same
-// tessellation's boundary polylines (design/viewer-memory.md lever B).
+// ranges — is untouched by the artifact swap. Geometry is cadgen's OCCT mesh
+// of the exact surfaces, in CAD units, handed on INDEXED: the mesh's shared
+// vertices, normals and index buffer are the render buffers, never expanded
+// per corner. CAD edges ride beside the triangles as indexed line segments
+// built from the same mesh's edge polylines (design/viewer-memory.md lever B).
 
 import { linearRgbToHex } from "../color.js";
-import { parseSurf } from "./container.js";
-import { tessellateComponent } from "./tessellate.js";
 
 // The line pass groups CAD edges by class so display.edges.classes styles each
 // one; every other edge class the extractor knows (boundary, nonManifold,
@@ -26,10 +23,10 @@ function lineClassForEdge(edge) {
   return CAD_EDGE_LINE_CLASSES.includes(visibilityClass) ? visibilityClass : "feature";
 }
 
-// A typed array is shared when it owns its buffer (a fresh tessellation) and
-// copied when it is a view (a decoded .tess cache entry is one buffer holding
-// positions, normals, face ords, indices, side ords and every polyline; sharing
-// a view would keep the whole entry resident once the meshData outlives it).
+// A typed array is shared when it owns its buffer and copied when it is a
+// view (a decoded .tess entry is one buffer holding positions, normals, face
+// ords, indices and every polyline; sharing a view would keep the whole entry
+// resident once the meshData outlives it).
 function ownedArray(array, Ctor) {
   if (array instanceof Ctor && array.byteOffset === 0 && array.byteLength === array.buffer.byteLength) {
     return array;
@@ -87,8 +84,10 @@ export function buildCadEdgeLines(edges) {
   return { positions, indices, classRanges };
 }
 
-export function buildMeshDataFromSurf(index, floats, options = {}) {
-  const component = options.component || tessellateComponent(index, floats, options);
+// `index` is the component's SURF index, or the stand-in a mesh entry carries
+// (surfIndexFromCacheEntry): only its part colour is read here.
+export function buildMeshDataFromSurf(index, component) {
+  if (!component?.positions) throw new TypeError("Display data needs the component's mesh");
   const vertices = ownedArray(component.positions, Float32Array);
   const normals = ownedArray(component.normals, Float32Array);
   const indices = ownedArray(component.indices, Uint32Array);
@@ -138,9 +137,4 @@ export function buildMeshDataFromSurf(index, floats, options = {}) {
     has_source_colors: Boolean(color),
     sourceColor: color || "",
   };
-}
-
-export function buildMeshDataFromSurfBuffer(buffer, options = {}) {
-  const { index, floats } = parseSurf(buffer);
-  return buildMeshDataFromSurf(index, floats, options);
 }

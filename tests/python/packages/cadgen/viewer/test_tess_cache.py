@@ -1,4 +1,4 @@
-"""The viewer's tessellation-cache transport and shared TESB framing.
+"""The viewer's read-only transport over the store's meshes, and shared TESB framing.
 
 Ports ``tessCache.test.mjs``. The container test does not read the format by
 eye — it hands the Python encoder's bytes to the AUTHORITATIVE decoder in
@@ -25,8 +25,8 @@ from cadgen.viewer.tess_cache import (
     read_tess_cache_batch,
     read_tess_cache_entry,
     tess_cache_key_from_route_path,
-    write_tess_cache_entry,
 )
+from cadgen.store import meshes
 from cadgen.store.tess_cache import tessellation_cache_dir
 
 from tests.python.support.tessellation import tessellation_fixture
@@ -60,7 +60,6 @@ class TessCacheTestCase(unittest.TestCase):
                 "LOCALAPPDATA",
                 "HOME",
                 "USERPROFILE",
-                "CADGEN_MESH_CACHE",
             )
         }
         self.addCleanup(self._restore)
@@ -115,39 +114,20 @@ class NameValidation(TessCacheTestCase):
 
 
 class StoreRoundTrip(TessCacheTestCase):
-    def test_write_then_read_returns_the_exact_bytes(self):
-        payload = PAYLOAD
-        self.assertEqual(write_tess_cache_entry(self.route(f"{GOOD_KEY}.tess"), payload), 204)
+    def test_a_stored_mesh_reads_back_exactly(self):
+        meshes.write(GOOD_KEY, PAYLOAD)
         status, body = read_tess_cache_entry(self.route(f"{GOOD_KEY}.tess"))
         self.assertEqual(status, 200)
-        self.assertEqual(body, payload)
+        self.assertEqual(body, PAYLOAD)
 
     def test_a_miss_is_404_and_a_refused_name_is_403(self):
         self.assertEqual(read_tess_cache_entry(self.route("absent-t1.tess"))[0], 404)
         self.assertEqual(read_tess_cache_entry(self.route("../escape.tess"))[0], 403)
-        self.assertEqual(write_tess_cache_entry(self.route("../escape.tess"), b"x"), 403)
 
-    def test_an_empty_body_is_accepted_and_dropped(self):
-        self.assertEqual(write_tess_cache_entry(self.route(f"{GOOD_KEY}.tess"), b""), 204)
-        self.assertEqual(read_tess_cache_entry(self.route(f"{GOOD_KEY}.tess"))[0], 404)
-
-    def test_the_write_leaves_no_temp_file_behind(self):
-        write_tess_cache_entry(self.route(f"{GOOD_KEY}.tess"), PAYLOAD)
+    def test_a_mesh_is_indexed_by_its_key_itself(self):
+        meshes.write(GOOD_KEY, PAYLOAD)
         names = os.listdir(tessellation_cache_dir())
-        self.assertEqual(names, [GOOD_KEY], "an index entry is keyed by the cache key itself")
-
-    def test_disabling_the_cache_turns_off_both_directions_and_creates_no_directory(self):
-        os.environ["CADGEN_MESH_CACHE"] = "0"
-        self.assertEqual(write_tess_cache_entry(self.route(f"{GOOD_KEY}.tess"), b"x"), 204)
-        self.assertEqual(read_tess_cache_entry(self.route(f"{GOOD_KEY}.tess"))[0], 404)
-        self.assertFalse(os.path.exists(tessellation_cache_dir()))
-
-    def test_the_enable_flag_is_read_per_call(self):
-        write_tess_cache_entry(self.route(f"{GOOD_KEY}.tess"), PAYLOAD)
-        os.environ["CADGEN_MESH_CACHE"] = "0"
-        self.assertEqual(read_tess_cache_entry(self.route(f"{GOOD_KEY}.tess"))[0], 404)
-        os.environ.pop("CADGEN_MESH_CACHE")
-        self.assertEqual(read_tess_cache_entry(self.route(f"{GOOD_KEY}.tess"))[0], 200)
+        self.assertEqual(names, [GOOD_KEY], "an index entry is keyed by the mesh key itself")
 
 
 class BatchRequests(TessCacheTestCase):
@@ -175,7 +155,7 @@ class BatchRequests(TessCacheTestCase):
         """
         import struct
 
-        write_tess_cache_entry(self.route(f"{GOOD_KEY}.tess"), PAYLOAD)
+        meshes.write(GOOD_KEY, PAYLOAD)
         body = json.dumps({"entries": [admitted(), admitted("NAME_HERE")]}).encode()
         container = read_tess_cache_batch(body.replace(b"NAME_HERE", b"\xe9"))
         self.assertIsNotNone(container, "a bad byte must not fail the whole batch")
@@ -231,7 +211,7 @@ class BatchFramingMatchesTheAuthoritativeCodec(TessCacheTestCase):
         return json.loads(result.stdout)
 
     def test_hit_miss_and_refusal_decode_in_order(self):
-        write_tess_cache_entry(self.route(f"{GOOD_KEY}.tess"), PAYLOAD)
+        meshes.write(GOOD_KEY, PAYLOAD)
         container = read_tess_cache_batch(
             json.dumps(
                 {"entries": [admitted(), admitted("absent-t1"), admitted("../escape")]}
@@ -245,7 +225,7 @@ class BatchFramingMatchesTheAuthoritativeCodec(TessCacheTestCase):
         # 1, 2 and 3 mod 4 all exercise the padding; a decoder that advances by
         # the raw length instead of the aligned one desynchronises after the
         # first such entry.
-        # Framing also accepts odd-length body readers; real TESS v4 bodies
+        # Framing also accepts odd-length body readers; real TESS bodies
         # themselves are aligned. Keep this isolated from payload validation.
         entries = [bytes(range(size)) for size in (1, 2, 3, 4, 5)]
         with mock.patch("cadgen.store.tess_cache.read_tessellation_cache", side_effect=entries):
@@ -253,7 +233,7 @@ class BatchFramingMatchesTheAuthoritativeCodec(TessCacheTestCase):
         self.assertEqual(self.decode_with_node(container), [list(entry) for entry in entries])
 
     def test_a_non_string_name_is_a_miss_and_keeps_the_container_valid(self):
-        write_tess_cache_entry(self.route(f"{GOOD_KEY}.tess"), PAYLOAD)
+        meshes.write(GOOD_KEY, PAYLOAD)
         container = read_tess_cache_batch(
             json.dumps({"entries": [17, admitted(), None]}).encode()
         )

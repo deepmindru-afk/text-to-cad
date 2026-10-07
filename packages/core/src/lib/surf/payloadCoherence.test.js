@@ -1,44 +1,37 @@
 // The mesh↔labels coherence invariant, pinned across every load-path shape.
 //
 // Picking and highlighting work only when the displayed meshData and the
-// selector bundle (face runs, edge tables) derive from ONE tessellation
-// result. Two viewer regressions came from breaking that pairing (LOD swaps
-// leaving level-0 runs on a level-2 mesh; nearly, cache-hit meshes vs fresh
-// bundles). This suite asserts the invariant on REAL surfs — a generated part
-// (sun_gear) and a native-import part (cam_follower_roller, the file the
-// second regression was reported on) — for every shape a component payload
-// can take:
-//   fresh tessellation · cache-entry decode (worker hit path) · the
-//   snapshot host's surrogate-index path · a finer LOD level.
+// selector bundle (face runs, edge tables) derive from ONE mesh. Two viewer
+// regressions came from breaking that pairing (LOD swaps leaving level-0 runs
+// on a level-2 mesh; nearly, cache-hit meshes vs fresh bundles). This suite
+// asserts the invariant on cadgen's stored meshes of REAL surfs — a gear
+// (sun_gear) and a turned part (cam_follower_roller) — for every shape a
+// component payload can take:
+//   the real SURF index (selectors) · the stored entry's own display index
+//   (render-only and snapshot loads) · a coarser LOD level.
 // It also asserts the MIXED pairing is DETECTABLE (a level-N mesh against
 // level-0 runs violates the count invariant), so a future desync cannot pass
 // this suite by accident.
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import path from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
 import { parseSurf } from "./container.js";
-import { tessellateComponent } from "./tessellate.js";
 import { buildMeshDataFromSurf } from "./surfMeshData.js";
 import { buildSelectorBundleFromSurf } from "./surfSelectorBundle.js";
-import {
-  decodeComponentTessellation,
-  edgeClassesFromSurfIndex,
-  encodeComponentTessellation,
-  surfIndexFromCacheEntry,
-} from "./tessellationCache.js";
+import { decodeComponentTessellation, surfIndexFromCacheEntry } from "./tessellationCache.js";
+import { meshFixture, surfFixture } from "./__tests__/meshFixtures.js";
 
-const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES = ["sun_gear", "cam_follower_roller"];
 const FACE_RUN_COLUMNS = 5; // occurrenceRow, primitiveIndex, triangleStart, triangleCount, faceRow
-const SURFACE_INPUT = "3".repeat(64);
-const SURFACE_OBJECT = "4".repeat(64);
 
-function loadFixture(name) {
-  const buffer = fs.readFileSync(path.join(HERE, "fixtures", `${name}.surf`));
-  return parseSurf(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength));
+function loadFixture(name, level = 1) {
+  const { index } = parseSurf(surfFixture(name).arrayBuffer());
+  const mesh = meshFixture(name, level);
+  const decoded = decodeComponentTessellation(mesh.bytes, {
+    surfaceInput: mesh.surfaceInput, surfaceObject: mesh.surfaceObject, tessellation: mesh.tessellation || {},
+  });
+  assert.ok(decoded, `${name} L${level} decodes`);
+  return { index, decoded, component: decoded.component };
 }
 
 function faceRunRows(bundle) {
@@ -82,12 +75,8 @@ function assertCoherent(label, component, meshData, bundle) {
   const componentEdgeOrds = new Set(component.edges.map((edge) => edge.ord));
   const edgeIds = bundle.buffers.edgeIds;
   assert.ok(edgeIds instanceof Uint32Array && edgeIds.length > 0, `${label}: bundle carries edge ids`);
-  // sideOrds on the tessellation reference only real edges (or 0 = none).
-  const sideOrds = new Set(component.sideOrds);
-  sideOrds.delete(0);
-  for (const ord of sideOrds) {
-    assert.ok(componentEdgeOrds.has(ord), `${label}: sideOrd ${ord} is a real edge of this tessellation`);
-  }
+  // Every edge row the bundle names is an edge of this mesh, or one it left undrawn.
+  assert.ok(component.edges.every((edge) => componentEdgeOrds.has(edge.ord)), `${label}: edge ordinals are unique`);
   const lineSegments = meshData.cadEdgeIndices.length / 2;
   const rangeSegments = meshData.cadEdgeClassRanges.reduce((sum, range) => sum + range.segmentCount, 0);
   const rangePoints = meshData.cadEdgeClassRanges.reduce((sum, range) => sum + range.pointCount, 0);
@@ -99,7 +88,7 @@ function assertCoherent(label, component, meshData, bundle) {
     0,
   );
   assert.equal(lineSegments, polylineSegments, `${label}: CAD edge lines come from THIS tessellation's polylines`);
-  // Indexed render buffers: the mesh shares the tessellator's vertices instead
+  // Indexed render buffers: the display shares the mesh's vertices instead
   // of expanding three corners per triangle.
   assert.equal(meshData.vertices.length, component.positions.length, `${label}: shared vertex buffer`);
   assert.equal(meshData.parts[0].vertexCount, component.positions.length / 3, `${label}: part vertexCount is the shared count`);
@@ -117,74 +106,38 @@ function assertTypedArraysEqual(label, a, b) {
 }
 
 for (const fixture of FIXTURES) {
-  test(`${fixture}: fresh tessellation payload is coherent (faces + edges)`, () => {
-    const { index, floats } = loadFixture(fixture);
-    const component = tessellateComponent(index, floats, {});
-    const meshData = buildMeshDataFromSurf(index, floats, { component });
-    const bundle = buildSelectorBundleFromSurf(index, floats, { component });
-    assertCoherent("fresh", component, meshData, bundle);
+  test(`${fixture}: the stored mesh with its SURF index is coherent (faces + edges)`, () => {
+    const { index, component } = loadFixture(fixture);
+    const meshData = buildMeshDataFromSurf(index, component);
+    const bundle = buildSelectorBundleFromSurf(index, component);
+    assertCoherent("real index", component, meshData, bundle);
+    // A decoded entry (one buffer for every section) is copied out so the entry can be released.
+    assert.notEqual(meshData.vertices.buffer, component.positions.buffer, "vertices leave the entry buffer");
   });
 
-  test(`${fixture}: cache-entry decode (worker hit path) reproduces the fresh payload exactly`, () => {
-    const { index, floats } = loadFixture(fixture);
-    const fresh = tessellateComponent(index, floats, {});
-    const entry = encodeComponentTessellation(fresh, {
-      surfaceInput: SURFACE_INPUT,
-      surfaceObject: SURFACE_OBJECT,
-      partColor: Array.isArray(index.partColor) ? index.partColor : null,
-      edgeClasses: edgeClassesFromSurfIndex(index),
-    });
-    const decoded = decodeComponentTessellation(entry);
-    assert.ok(decoded, "entry decodes");
-    // The worker hit path: cached component + the REAL surf index feed both
-    // consumers, exactly like surfWorker.js does.
-    const meshHit = buildMeshDataFromSurf(index, floats, { component: decoded.component });
-    const bundleHit = buildSelectorBundleFromSurf(index, floats, { component: decoded.component });
-    assertCoherent("cache-hit", decoded.component, meshHit, bundleHit);
-    const meshFresh = buildMeshDataFromSurf(index, floats, { component: fresh });
-    for (const key of ["vertices", "indices", "normals", "cadEdgePositions", "cadEdgeIndices"]) {
-      assertTypedArraysEqual(`cache-hit meshData.${key}`, meshHit[key], meshFresh[key]);
-    }
-    assert.deepEqual(meshHit.cadEdgeClassRanges, meshFresh.cadEdgeClassRanges, "cache-hit class ranges");
-    // A fresh tessellation is shared by reference; a decoded entry (one buffer
-    // for every section) is copied out so the entry can be released.
-    assert.equal(meshFresh.vertices, fresh.positions, "fresh vertices are the tessellator's array");
-    assert.notEqual(meshHit.vertices.buffer, decoded.component.positions.buffer, "cache-hit vertices leave the entry buffer");
-    const bundleFresh = buildSelectorBundleFromSurf(index, floats, { component: fresh });
-    assertTypedArraysEqual("cache-hit faceRuns", bundleHit.buffers.faceRuns, bundleFresh.buffers.faceRuns);
-    assertTypedArraysEqual("cache-hit edgeIds", bundleHit.buffers.edgeIds, bundleFresh.buffers.edgeIds);
-  });
-
-  test(`${fixture}: snapshot surrogate-index path matches the real-index mesh`, () => {
-    const { index, floats } = loadFixture(fixture);
-    const fresh = tessellateComponent(index, floats, {});
-    const entry = encodeComponentTessellation(fresh, {
-      surfaceInput: SURFACE_INPUT,
-      surfaceObject: SURFACE_OBJECT,
-      partColor: Array.isArray(index.partColor) ? index.partColor : null,
-      edgeClasses: edgeClassesFromSurfIndex(index),
-    });
-    const decoded = decodeComponentTessellation(entry);
+  test(`${fixture}: the entry's own display index draws what the real index draws`, () => {
+    const { index, decoded, component } = loadFixture(fixture);
     const surrogate = surfIndexFromCacheEntry(decoded);
-    assert.ok(surrogate, "v4 entry yields a surrogate index");
-    const meshSurrogate = buildMeshDataFromSurf(surrogate, null, { component: decoded.component });
-    const meshReal = buildMeshDataFromSurf(index, floats, { component: fresh });
-    for (const key of ["vertices", "indices", "cadEdgePositions", "cadEdgeIndices"]) {
+    assert.ok(surrogate, "every stored mesh yields a display index");
+    const meshSurrogate = buildMeshDataFromSurf(surrogate, component);
+    const meshReal = buildMeshDataFromSurf(index, component);
+    for (const key of ["vertices", "indices", "normals", "cadEdgePositions", "cadEdgeIndices"]) {
       assertTypedArraysEqual(`surrogate meshData.${key}`, meshSurrogate[key], meshReal[key]);
     }
+    assert.deepEqual(meshSurrogate.cadEdgeClassRanges, meshReal.cadEdgeClassRanges, "surrogate class ranges");
+    assert.equal(meshSurrogate.sourceColor, meshReal.sourceColor, "the part colour rides the entry");
   });
 
   test(`${fixture}: a mixed level pairing VIOLATES the invariant (detectability)`, () => {
-    const { index, floats } = loadFixture(fixture);
-    const level0 = tessellateComponent(index, floats, {});
-    const level1 = tessellateComponent(index, floats, { chordTolerance: 5e-4 });
+    const { index, component: level1 } = loadFixture(fixture, 1);
+    const { component: level0 } = loadFixture(fixture, 0);
     assert.notEqual(
       level1.indices.length,
       level0.indices.length,
-      "levels tessellate to different densities (otherwise this test is vacuous)",
+      "levels mesh to different densities (otherwise this test is vacuous)",
     );
-    const meshLevel1 = buildMeshDataFromSurf(index, floats, { component: level1 });
-    const bundleLevel0 = buildSelectorBundleFromSurf(index, floats, { component: level0 });
+    const meshLevel1 = buildMeshDataFromSurf(index, level1);
+    const bundleLevel0 = buildSelectorBundleFromSurf(index, level0);
     const runTriangles = faceRunRows(bundleLevel0).reduce((sum, row) => sum + row.triangleCount, 0);
     assert.notEqual(
       runTriangles,
@@ -192,7 +145,7 @@ for (const fixture of FIXTURES) {
       "level-0 runs against a level-1 mesh fail the count invariant — the desync is detectable",
     );
     // And the properly paired level-1 payload passes.
-    const bundleLevel1 = buildSelectorBundleFromSurf(index, floats, { component: level1 });
+    const bundleLevel1 = buildSelectorBundleFromSurf(index, level1);
     assertCoherent("level-1 paired", level1, meshLevel1, bundleLevel1);
   });
 }

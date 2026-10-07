@@ -1,4 +1,5 @@
 import { viewerOriginUrl } from "./origin.js";
+import { tessellationCacheKey, tessellationQuality, validateTessellationProbeRow } from "../lib/surf/tessellationCache.js";
 const DIGEST_RE = /^[0-9a-f]{64}$/;
 const INITIAL_POLL_MS = 80;
 const MAX_POLL_MS = 640;
@@ -44,7 +45,7 @@ async function guardedPost(path, body, { signal, client }) {
     : client.requestSurfaces(body, { signal });
 }
 
-function verifiedReadyRow(row, { tree, cid, surfaceInput, client }) {
+function verifiedReadyRow(row, { tree, cid, surfaceInput, client, tessellation }) {
   if (!row || row.state !== "ready" || row.surfaceInput !== surfaceInput) {
     throw new Error(`Surface response changed the immutable input for ${cid}`);
   }
@@ -60,11 +61,21 @@ function verifiedReadyRow(row, { tree, cid, surfaceInput, client }) {
       || parsed.searchParams.get("object") !== surfaceObject) {
     throw new Error(`Surface response has an invalid immutable URL for ${cid}`);
   }
+  // A request that named a tessellation is ready only with that mesh stored: its row is the
+  // probe row a read of the mesh store would answer.
+  let mesh = null;
+  if (tessellation) {
+    mesh = validateTessellationProbeRow(row.mesh, {
+      tessellationInput: tessellationCacheKey(surfaceInput, tessellation), surfaceInput, surfaceObject,
+    });
+    if (!mesh) throw new Error(`Surface response has no valid mesh for ${cid}`);
+  }
   return Object.freeze({
     surfaceInput,
     surfaceObject,
     surfUrl: client ? viewerOriginUrl(client.origin, `${parsed.pathname}${parsed.search}`) : `${parsed.pathname}${parsed.search}`,
     byteLength,
+    ...(mesh ? { mesh } : {}),
   });
 }
 
@@ -97,15 +108,20 @@ export class SurfaceResolutionError extends Error {
  * path does not call this function. The request never computes D or producer
  * identity in JavaScript; it forwards the backend-prepared opaque pins.
  *
+ * `tessellation`, when given, also asks for every component's mesh at those
+ * tolerances (`{}` is the default pair): cadgen meshes what its store lacks,
+ * and each ticket carries the mesh's probe row (`mesh`), so its body is read
+ * next without another probe.
+ *
  * `onReady(cid, ticket)`, when given, hears each component the moment its row is
  * ready, once, while the request goes on waiting for the rest of its components:
  * a caller that asked for many need not hold the first behind the last.
  */
-export async function resolveSurfaceComponents(descriptor, requested, { signal, client, onReady = null } = {}) {
+export async function resolveSurfaceComponents(descriptor, requested, { signal, client, onReady = null, tessellation = undefined } = {}) {
   if (!client) throw new TypeError("Surface resolution requires a CAD workspace service");
   const list = Array.isArray(requested) ? requested : [];
   if (list.length <= SURFACE_REQUEST_MAX_COMPONENTS) {
-    return resolveSurfaceRequest(descriptor, list, { signal, client, onReady });
+    return resolveSurfaceRequest(descriptor, list, { signal, client, onReady, tessellation });
   }
   // Every chunk is its own request (and subscriber job); one failing stops the others.
   const controller = new AbortController();
@@ -118,7 +134,7 @@ export async function resolveSurfaceComponents(descriptor, requested, { signal, 
       chunks.push(list.slice(start, start + SURFACE_REQUEST_MAX_COMPONENTS));
     }
     const results = await Promise.all(chunks.map((chunk) => (
-      resolveSurfaceRequest(descriptor, chunk, { signal: controller.signal, client, onReady }).catch((error) => {
+      resolveSurfaceRequest(descriptor, chunk, { signal: controller.signal, client, onReady, tessellation }).catch((error) => {
         controller.abort();
         throw error;
       })
@@ -141,7 +157,7 @@ function subscriberToken(payload) {
   return String(rows.find((row) => row?.job)?.job || "");
 }
 
-async function resolveSurfaceRequest(descriptor, requested, { signal, client, onReady = null }) {
+async function resolveSurfaceRequest(descriptor, requested, { signal, client, onReady = null, tessellation = undefined }) {
   const tree = digest(descriptor?.tree, "surface tree");
   const viewId = digest(descriptor?.viewId, "surface viewId");
   const producer = descriptor?.surfaceProducer;
@@ -157,7 +173,11 @@ async function resolveSurfaceRequest(descriptor, requested, { signal, client, on
     throw new TypeError("surface request must name at least one component");
   }
 
-  const base = { tree, viewId, producer, components };
+  // The pair the server keys the mesh by: both tolerances, defaults filled in.
+  const quality = tessellation == null ? null : tessellationQuality(tessellation);
+  const meshTessellation = quality
+    ? { chordTolerance: quality.chordTolerance, angleTolerance: quality.angleTolerance } : null;
+  const base = { tree, viewId, producer, components, ...(meshTessellation ? { tessellation: meshTessellation } : {}) };
   let job = "";
   let cancelled = false;
   const cancel = () => {
@@ -215,7 +235,7 @@ async function resolveSurfaceRequest(descriptor, requested, { signal, client, on
           pending = true;
           continue;
         }
-        const ticket = verifiedReadyRow(row, { tree, ...request, client });
+        const ticket = verifiedReadyRow(row, { tree, ...request, client, tessellation: meshTessellation });
         if (request.expectedSurfaceObject && ticket.surfaceObject !== request.expectedSurfaceObject) {
           throw new Error(`Surface response changed the pinned object for ${request.cid}`);
         }

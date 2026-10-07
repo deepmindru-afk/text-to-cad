@@ -33,6 +33,11 @@ MAX_HEADER_BYTES = 4 * 1024 * 1024
 MAX_SAFE_INTEGER = 2**53 - 1
 DEFAULT_CHORD = 0.0015
 DEFAULT_ANGLE = 0.35
+# The finest tolerances anything may ask to have meshed: ~100x finer than the
+# defaults, beyond any display need at any output size. Below them a request is
+# not a mesh, it is a mesher that exhausts its worker's memory.
+MIN_CHORD = 1e-5
+MIN_ANGLE = 5e-3
 _KEY = re.compile(
     rf"([0-9a-f]{{64}})-t{TESSELLATOR_VERSION}-p{TESS_VERSION}"
     rf"-l([0-9a-f]{{16}})-a([0-9a-f]{{16}})"
@@ -139,10 +144,42 @@ def tessellation_quality(chord: float = DEFAULT_CHORD, angle: float = DEFAULT_AN
     }
 
 
+def normalize_tessellations(value: Any) -> list[tuple[float, float]]:
+    """``[{chordTolerance, angleTolerance}, ...]`` as sorted, distinct (chord, angle) pairs.
+
+    What a request may ask to have meshed: both tolerances, positive finite
+    binary64 values no finer than ``MIN_CHORD``/``MIN_ANGLE``; anything else is a
+    ValueError before any work starts.
+    """
+    if value is None:
+        return []
+    if type(value) not in (list, tuple):
+        raise ValueError("tessellations must be a list of {chordTolerance, angleTolerance}")
+    pairs = set()
+    for item in value:
+        if type(item) is not dict or set(item) != {"chordTolerance", "angleTolerance"}:
+            raise ValueError("a tessellation is exactly {chordTolerance, angleTolerance}")
+        chord, angle = item["chordTolerance"], item["angleTolerance"]
+        tessellation_quality(chord, angle)  # positive finite binary64 values, or ValueError
+        if chord < MIN_CHORD or angle < MIN_ANGLE:
+            raise ValueError(f"a tessellation is at least chordTolerance {MIN_CHORD} and angleTolerance {MIN_ANGLE}")
+        pairs.add((float(chord), float(angle)))
+    return sorted(pairs)
+
+
 def tessellation_key(surface_input: str, chord: float = DEFAULT_CHORD, angle: float = DEFAULT_ANGLE) -> str:
     if not _digest(surface_input):
         raise ValueError("surface input must be a full lowercase content digest")
     return f"{surface_input}-t{TESSELLATOR_VERSION}-p{TESS_VERSION}-l{float64_hex(chord)}-a{float64_hex(angle)}"
+
+
+def parse_key(key: Any) -> tuple[str, float, float] | None:
+    """A valid key's (surface input, chord, angle); None for anything else."""
+    if not valid_key(key):
+        return None
+    match = _KEY.fullmatch(key)
+    return (match[1], struct.unpack(">d", bytes.fromhex(match[2]))[0],
+            struct.unpack(">d", bytes.fromhex(match[3]))[0])
 
 
 def valid_key(key: Any) -> bool:
@@ -290,7 +327,7 @@ def _valid_record(key: str, record: Any) -> bool:
 
 def probe(key: str) -> dict | None:
     """Bounded metadata only; no body, SURF, native import, or source lookup."""
-    if os.environ.get("CADGEN_MESH_CACHE") == "0" or not valid_key(key):
+    if not valid_key(key):
         return None
     try:
         with entry_path("mesh", key).open("rb") as stream:
@@ -327,10 +364,8 @@ def read(key: str, *, expected_object: str | None = None, max_bytes: int | None 
         return None
 
 
-def write(key: str, payload: bytes) -> dict | None:
+def write(key: str, payload: bytes) -> dict:
     """Publish a verified object before its input index; observed conflicts fail."""
-    if os.environ.get("CADGEN_MESH_CACHE") == "0":
-        return None
     record = payload_record(key, payload)
     prior = probe(key)
     if prior is not None and (prior["object"] != record["object"] or prior["surfaceObject"] != record["surfaceObject"]):

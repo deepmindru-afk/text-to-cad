@@ -1,4 +1,4 @@
-"""Real JS TESS bytes cross the Python store and both HTTP cache adapters."""
+"""cadgen's TESS bytes cross the Python store, both HTTP adapters and the shared JS reader."""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ import hashlib
 import json
 import os
 import struct
-import subprocess
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -32,10 +31,10 @@ class MeshStoreContract(unittest.TestCase):
         cls.payload = base64.b64decode(cls.fixture["bytes"])
 
     def setUp(self):
-        self.tmp = generated_cad_directory(prefix="store-tess-v4-")
+        self.tmp = generated_cad_directory(prefix="store-tess-")
         self.addCleanup(self.tmp.cleanup)
         self.store = Path(self.tmp.name) / "store"
-        self.env = mock.patch.dict(os.environ, {"CADGEN_CACHE_DIR": str(self.store), "CADGEN_MESH_CACHE": "1"})
+        self.env = mock.patch.dict(os.environ, {"CADGEN_CACHE_DIR": str(self.store)})
         self.env.start()
         self.addCleanup(self.env.stop)
 
@@ -50,9 +49,14 @@ class MeshStoreContract(unittest.TestCase):
         encoded += b" " * (-len(encoded) % 4)
         return self.payload[:8] + struct.pack("<I", len(encoded)) + encoded + self.payload[12 + old_size:]
 
-    def test_real_js_payload_and_memory_facts_match_python_exactly(self):
+    def test_python_payload_and_memory_facts_match_the_js_reader_exactly(self):
+        from tests.python.support.tessellation import js_reader
+
         row = meshes.payload_record(self.key, self.payload)
         self.assertEqual(row, self.fixture["facts"])
+        [[facts, decodes]] = js_reader([self.payload])
+        self.assertTrue(decodes)
+        self.assertEqual({"schemaVersion": row["schemaVersion"], "object": row["object"], **facts}, row)
         self.assertEqual(row["edgeSegmentCount"], 2)
         self.assertEqual(meshes.write(self.key, self.payload), row)
         self.assertEqual(meshes.probe(self.key), row)
@@ -136,13 +140,6 @@ class MeshStoreContract(unittest.TestCase):
         self.assertIsNone(read_tess_cache_batch(b'{"names":[]}'))
         self.assertIsNone(read_tess_cache_probe(json.dumps({"tessellationInputs": [self.key] * 257}).encode()))
 
-    def test_disabling_cache_does_not_create_store_or_read_native_inputs(self):
-        with mock.patch.dict(os.environ, {"CADGEN_MESH_CACHE": "0"}):
-            self.assertIsNone(meshes.write(self.key, self.payload))
-            self.assertIsNone(meshes.probe(self.key))
-            self.assertIsNone(meshes.read(self.key))
-        self.assertFalse(self.store.exists())
-
     def test_malformed_render_metadata_is_rejected_in_python_and_shared_js(self):
         cases = [
             ("bounds object", ["bounds"], None),
@@ -194,21 +191,10 @@ class MeshStoreContract(unittest.TestCase):
             payload = self.rewritten_header(path, value)
             with self.subTest(label=label), self.assertRaises(ValueError):
                 meshes.payload_record(self.key, payload)
-            payloads.append(base64.b64encode(payload).decode())
+            payloads.append(payload)
 
-        from tests.python.support.tessellation import CODEC
-        script = """
-import fs from 'node:fs';
-const api = await import(process.argv[1]);
-const results = JSON.parse(fs.readFileSync(0, 'utf8')).map((body) => {
-  const bytes = new Uint8Array(Buffer.from(body, 'base64'));
-  return [api.tessellationPayloadFacts(bytes), api.decodeComponentTessellation(bytes)];
-});
-console.log(JSON.stringify(results));
-"""
-        result = subprocess.run(["node", "--input-type=module", "-e", script, CODEC.as_uri()],
-                                input=json.dumps(payloads), text=True, capture_output=True, check=True, timeout=10)
-        self.assertEqual(json.loads(result.stdout), [[None, None]] * len(cases))
+        from tests.python.support.tessellation import js_reader
+        self.assertEqual(js_reader(payloads), [[None, False]] * len(cases))
 
     def test_hash_valid_unrenderable_payload_is_a_miss_and_repairs(self):
         valid = meshes.write(self.key, self.payload)

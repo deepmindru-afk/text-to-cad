@@ -1,4 +1,4 @@
-"""The shared v4 tessellation protocol stays below HTTP transports."""
+"""The store's mesh protocol stays below HTTP transports: probes, exact reads, batches, produce."""
 
 from __future__ import annotations
 
@@ -15,14 +15,15 @@ from tests.python.support.paths import add_repo_path
 
 add_repo_path("packages/cadgen/src")
 
+from cadgen.store import meshes  # noqa: E402
 from cadgen.store.tess_cache import (  # noqa: E402
     encode_tessellation_cache_batch,
     is_tessellation_cache_key,
+    produce_tess_cache,
     read_tess_cache_batch,
     read_tess_cache_probe,
     read_tessellation_cache,
     tessellation_cache_dir,
-    write_tessellation_cache,
 )
 from tests.python.support.tessellation import tessellation_fixture  # noqa: E402
 
@@ -37,14 +38,13 @@ class TessellationCacheStoreTests(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self._environment = mock.patch.dict(os.environ, {
             "CADGEN_CACHE_DIR": str(Path(self._tmp.name) / "cache"),
-            "CADGEN_MESH_CACHE": "1",
         })
         self._environment.start()
         self.addCleanup(self._environment.stop)
 
-    def test_validated_v4_round_trip(self) -> None:
+    def test_validated_round_trip(self) -> None:
         self.assertTrue(is_tessellation_cache_key(GOOD_KEY))
-        write_tessellation_cache(GOOD_KEY, PAYLOAD)
+        meshes.write(GOOD_KEY, PAYLOAD)
         row = read_tess_cache_probe(json.dumps({
             "tessellationInputs": [GOOD_KEY],
         }).encode())["entries"][GOOD_KEY]
@@ -61,14 +61,34 @@ class TessellationCacheStoreTests(unittest.TestCase):
                 read_tessellation_cache(key)
         self.assertFalse(Path(tessellation_cache_dir()).exists())
 
-    def test_disabled_cache_drops_reads_and_writes(self) -> None:
-        os.environ["CADGEN_MESH_CACHE"] = "0"
-        write_tessellation_cache(GOOD_KEY, PAYLOAD)
-        self.assertIsNone(read_tessellation_cache(GOOD_KEY))
-        self.assertFalse(Path(tessellation_cache_dir()).exists())
+    def test_produce_meshes_what_a_probe_finds_missing_from_its_surface_alone(self) -> None:
+        from build123d import Box, Cylinder
+        from cadgen.store import surfaces
+        from cadgen.store.build import build_tree_from_compound
+
+        tree, descriptor, _ = build_tree_from_compound(Box(10, 10, 10) - Cylinder(3, 10), root_name="bored")
+        producer = surfaces.producer_identity()
+        [entry] = descriptor["components"].values()
+        surfaces.derive(tree, producer=producer)
+        surface_input = surfaces.surface_input(entry, producer)
+        wanted = meshes.tessellation_key(surface_input, 5e-4, 0.35)
+        unknown = meshes.tessellation_key("f" * 64)
+        too_fine = meshes.tessellation_key(surface_input, 1e-6, 0.35)
+        ask = lambda keys: read_tess_cache_probe(json.dumps({"tessellationInputs": keys}).encode())  # noqa: E731
+        self.assertEqual(ask([wanted])["entries"], {}, "derivation meshed nothing it was not asked for")
+        produced = produce_tess_cache(json.dumps({"tessellationInputs": [wanted, unknown, too_fine]}).encode())
+        self.assertEqual(list(produced["entries"]), [wanted], "a surface the store lacks, or a finer request, stays missing")
+        self.assertEqual(ask([wanted])["entries"], produced["entries"], "the produced mesh is stored, and probes as made")
+        body = read_tessellation_cache(wanted, expected_object=produced["entries"][wanted]["object"])
+        self.assertEqual(meshes.payload_record(wanted, body), produced["entries"][wanted])
+        self.assertEqual(produce_tess_cache(json.dumps({"tessellationInputs": [wanted]}).encode()), produced,
+                         "asking again reads what is stored")
+        for malformed in (b"{}", b'{"tessellationInputs": [1]}', b"not json"):
+            with self.subTest(body=malformed):
+                self.assertIsNone(produce_tess_cache(malformed))
 
     def test_batch_reads_are_exact_object_and_size_bound(self) -> None:
-        write_tessellation_cache(GOOD_KEY, PAYLOAD)
+        meshes.write(GOOD_KEY, PAYLOAD)
         row = read_tess_cache_probe(json.dumps({
             "tessellationInputs": [GOOD_KEY],
         }).encode())["entries"][GOOD_KEY]

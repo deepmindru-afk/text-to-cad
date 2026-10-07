@@ -24,7 +24,6 @@ import json
 import mimetypes
 import os
 import re
-import struct
 import sys
 import time
 from collections.abc import Mapping
@@ -1368,25 +1367,24 @@ def route_file(pathname: str, prefix: str, root: Path) -> Path:
     if not path_is_inside_or_equal(file_path, root):
         raise RouteFileError(f"forbidden route path: {pathname}", status=403)
     return file_path
-# --- shared component-tessellation cache (design/unified-tessellation.md) ----
+# --- the store's component meshes ---------------------------------------------
 #
-# The snapshot page resolves component tessellations through the SAME disk
-# cache the mesh-export CLI uses (immutable objects plus index/mesh; codec and
-# key scheme in packages/core/src/lib/surf/tessellationCache.js). The page
-# cannot touch the filesystem, so the host serves the cache: GET
-# /__tess_cache/<key>.tess is a read, POST is a best-effort write-back after
-# an in-page tessellation miss. CADGEN_MESH_CACHE=0 turns both directions
-# off. Python validates the shared TESS input identity, header and content hash;
-# metadata probes and exact-object reads enforce admission before body transfer.
+# The snapshot page draws the same stored meshes the viewer and the mesh
+# exports do (immutable objects plus index/mesh; codec and key scheme in
+# cadgen/store/meshes.py and packages/core/src/lib/surf/tessellationCache.js).
+# The page cannot touch the filesystem, so the host serves the store: a probe
+# names what exists, GET /__tess_cache/<key>.tess and the batch route read
+# exact objects, and POST /__tess_cache/produce has cadgen mesh, here, any
+# component the probe found missing. The page never tessellates.
 #
 # TRANSPORT: bulk bytes must NOT go through Playwright at all. CDP serializes
 # every fulfilled body as base64 over the devtools pipe at ~20 MB/s, which made
 # a warm moonwatch snapshot spend ~8s moving ~180 MB of surfs + cache entries.
 # Worse, INTERCEPTION alone costs the pipe in the other direction: a routed
 # request's body reaches the driver as escaped text in one protocol message, so
-# a 92 MB cache write-back exceeded Node's string limit and killed the renderer
-# (reported to the caller as a lost driver connection). A 307 to loopback
-# cannot save such a request — by then the body has already crossed.
+# a large body can exceed Node's string limit and kill the renderer (reported
+# to the caller as a lost driver connection). A 307 to loopback cannot save
+# such a request — by then the body has already crossed.
 #
 # So the renderer runs a loopback HTTP server and the page addresses it by its
 # ABSOLUTE origin for the cache (window.__cadgenSnapshotAssetOrigin, injected
@@ -1420,7 +1418,6 @@ def read_tessellation_cache_entry(pathname: str, *, expected_object=None, max_by
     if key is None:
         return None
     try:
-        # A disabled cache (CADGEN_MESH_CACHE=0) answers None from the store itself.
         return read_tessellation_cache(
             key, expected_object=expected_object, max_bytes=max_bytes,
         )
@@ -1428,31 +1425,11 @@ def read_tessellation_cache_entry(pathname: str, *, expected_object=None, max_by
         return None
 
 
-def write_tessellation_cache_entry(pathname: str, body: bytes | None) -> bool:
-    """Best-effort write-back; False for an invalid or conflicting entry."""
-    return _write_tessellation_cache_entry_status(pathname, body) == 204
-
-
-def _write_tessellation_cache_entry_status(pathname: str, body: bytes | None) -> int:
-    key = _tessellation_cache_key(pathname)
-    if key is None:
-        return 403
-    if body:
-        from cadgen.store.meshes import MeshConflictError
-        from cadgen.store.tess_cache import write_tessellation_cache
-        try:
-            write_tessellation_cache(key, body)
-        except MeshConflictError:
-            return 409
-        except (ValueError, TypeError, KeyError, OverflowError, struct.error):
-            return 400
-    return 204
-
-
 # Probe small index facts, then request only admitted exact objects. The shared
 # TESB container stays unchanged; store.tess_cache owns both hosts' framing.
 TESS_CACHE_BATCH_PATH = "/__tess_cache/batch"
 TESS_CACHE_PROBE_PATH = "/__tess_cache/probe"
+TESS_CACHE_PRODUCE_PATH = "/__tess_cache/produce"
 
 
 def read_tessellation_cache_batch(body: bytes | None) -> bytes | None:
@@ -1484,7 +1461,7 @@ class SnapshotAssetServer:
 
     Serves exactly two path families — ``/__render_asset/`` (files under the
     active render root, same containment rule as the CDP route for the page
-    itself) and ``/__tess_cache/`` (the shared tessellation cache) — to
+    itself) and ``/__tess_cache/`` (the store's component meshes) — to
     whatever origin the snapshot page runs as (CORS ``*``; the socket is
     loopback-only and serves only what the page may already read).
     ``root_provider`` is read per request so one server follows the renderer
@@ -1591,8 +1568,11 @@ class SnapshotAssetServer:
                     self.close_connection = True
                     self._send(400)
                     return
-                maximum = TESS_CACHE_METADATA_MAX_BYTES if pathname in (TESS_CACHE_PROBE_PATH, TESS_CACHE_BATCH_PATH) else 256 * 1024 * 1024
-                if length > maximum:
+                if pathname not in (TESS_CACHE_PROBE_PATH, TESS_CACHE_BATCH_PATH, TESS_CACHE_PRODUCE_PATH):
+                    self.close_connection = True
+                    self._send(405, b"the store's meshes are read-only here", "text/plain; charset=utf-8")
+                    return
+                if length > TESS_CACHE_METADATA_MAX_BYTES:
                     self.close_connection = True
                     self._send(413, b"oversized cache request")
                     return
@@ -1613,7 +1593,17 @@ class SnapshotAssetServer:
                         return
                     self._send(200, batch)
                     return
-                self._send(_write_tessellation_cache_entry_status(pathname, body))
+                from cadgen.store.tess_cache import produce_tess_cache
+
+                try:
+                    result = produce_tess_cache(body)
+                except Exception as exc:  # noqa: BLE001 - the page reports why a mesh is missing
+                    self._send(500, f"cadgen could not mesh a component: {exc}".encode(), "text/plain; charset=utf-8")
+                    return
+                if result is None:
+                    self._send(400, b"bad tessellation produce request")
+                    return
+                self._send(200, json.dumps(result, separators=(",", ":")).encode(), "application/json")
 
         class Server(http.server.ThreadingHTTPServer):
             def server_bind(self) -> None:

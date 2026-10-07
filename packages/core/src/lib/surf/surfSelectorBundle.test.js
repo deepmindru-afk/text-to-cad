@@ -1,8 +1,8 @@
-// Selector-bundle parity (design/surface-rendering.md R3): the bundle
-// synthesized from a .surf must carry the same tables the component GLB's
-// STEP_TOPOLOGY selector manifest carried for the same shape. The oracle
-// (sun_gear.selector.json) is dumped by the fixture generator from a real
-// build_component_glb_from_shape run.
+// Selector-bundle parity (design/surface-rendering.md R3): the bundle built
+// from a .surf and its stored mesh must carry the same tables cadgen's own
+// selector tables carry for that SURF (cadgen._internal.surf_tables, dumped by
+// fixtures/make_fixtures.py as sun_gear.selector.json): its exact metrics, which
+// the mesh-derived values here must match within the mesh's tolerance.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -12,14 +12,15 @@ import { fileURLToPath } from "node:url";
 
 import { parseSurf } from "./container.js";
 import { buildSelectorBundleFromSurf } from "./surfSelectorBundle.js";
+import { decodeComponentTessellation } from "./tessellationCache.js";
+import { meshFixture, surfFixture } from "./__tests__/meshFixtures.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const surfBytes = readFileSync(join(here, "fixtures/sun_gear.surf"));
 const oracle = JSON.parse(readFileSync(join(here, "fixtures/sun_gear.selector.json"), "utf8"));
-const { index, floats } = parseSurf(
-  surfBytes.buffer.slice(surfBytes.byteOffset, surfBytes.byteOffset + surfBytes.byteLength),
-);
-const bundle = buildSelectorBundleFromSurf(index, floats);
+const { index } = parseSurf(surfFixture("sun_gear").arrayBuffer());
+const mesh = meshFixture("sun_gear", 1);
+const { component } = decodeComponentTessellation(mesh.bytes, { surfaceInput: mesh.surfaceInput, tessellation: {} });
+const bundle = buildSelectorBundleFromSurf(index, component);
 
 function rowsAsObjects(manifest, rowKey, columnsKey) {
   const columns = manifest.tables[columnsKey];
@@ -57,7 +58,7 @@ test("face rows match the oracle (ids, types, areas, centers, relations)", () =>
       near(a.bbox.max[d], b.bbox.max[d], 0.05, `${a.id} bbox.max[${d}]`);
     }
     assert.equal(a.edgeCount, b.edgeCount, `${a.id} edgeCount`);
-    assert.equal(a.triangleCount > 0, b.triangleCount > 0, `${a.id} has triangles`);
+    assert.ok(a.triangleCount > 0, `${a.id} has triangles`);
     if (b.params) {
       assert.ok(a.params, `${a.id} params`);
       for (const key of Object.keys(b.params)) {
@@ -81,8 +82,8 @@ test("edge rows match the oracle (types, lengths, classes, adjacency)", () => {
     assert.equal(a.faceCount, b.faceCount, `${a.id} faceCount`);
     if (a.visibilityClass !== b.visibilityClass) classMismatches += 1;
   }
-  // Classification algorithms are mirrored but not byte-identical
-  // (sampled dihedral vs mesh-derived); allow a small disagreement tail.
+  // Both read the SURF's classes; allow the small tail the oracle's
+  // own tolerance always did.
   assert.ok(
     classMismatches <= Math.ceil(truth.length * 0.02),
     `${classMismatches}/${truth.length} visibility class mismatches`,

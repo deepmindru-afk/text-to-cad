@@ -1,13 +1,9 @@
-// Level-keyed surf tessellation (design/unified-tessellation.md Phase 5): the
-// same component URL at different chord tolerances yields distinct cached
-// payloads (finer level -> more triangles), repeat requests at a level are
-// cache hits (one fetch per level), and every surf entry is LRU-bounded.
+// Level-keyed stored meshes (design/unified-tessellation.md Phase 5): the same
+// component at different chord tolerances reads distinct stored meshes (a
+// finer level -> more triangles), repeat requests at a level are RAM hits
+// (one read per level), and every surf entry is LRU-bounded.
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
-import fs from "node:fs";
-import path from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
 import {
   loadRenderSurfPayloadAtLevel as loadPayload,
@@ -19,35 +15,35 @@ import {
   LOD_DEFAULT_LEVEL,
   lodTessellationForLevel,
 } from "./surf/lodPolicy.js";
-import { TESSELLATION_VERSION } from "./surf/tessellate.js";
+import { TESSELLATION_VERSION, createTessellationCache } from "./surf/tessellationCache.js";
+import { everyKeyMeshProvider, memoryMeshProvider, meshFixture, surfFixture } from "./surf/__tests__/meshFixtures.js";
 
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-// Read the algorithm generation from the constant rather than spelling it out:
-// this asserts the key's SHAPE, and every tessellator change bumps that number.
+// Read the producer generation from the constant rather than spelling it out:
+// this asserts the key's SHAPE, and every producer change bumps that number.
 const IDENTITY = new RegExp(
-  `^[0-9a-f]{64}-t${TESSELLATION_VERSION}-p4-l[0-9a-f]{16}-a[0-9a-f]{16}-s[0-9a-f]{64}$`,
+  `^[0-9a-f]{64}-t${TESSELLATION_VERSION}-p5-l[0-9a-f]{16}-a[0-9a-f]{16}-s[0-9a-f]{64}$`,
 );
-const SUN_GEAR = fs.readFileSync(path.join(HERE, "surf", "fixtures", "sun_gear.surf"));
-const SURFACE_OBJECT = createHash("sha256").update(SUN_GEAR).digest("hex");
-const identityFor = (url) => ({
-  surfaceInput: createHash("sha256").update(`test-surface-input:${url}`).digest("hex"),
-  surfaceObject: SURFACE_OBJECT,
-});
+const SUN_GEAR = surfFixture("sun_gear");
+// The fixture's stored meshes, both levels, under its own identity.
+const levelStore = () => memoryMeshProvider([meshFixture("sun_gear", 0).bytes, meshFixture("sun_gear", 1).bytes]);
+const identityFor = () => ({ surfaceInput: SUN_GEAR.surfaceInput, surfaceObject: SUN_GEAR.surfaceObject });
 const surfTessellationCacheKey = (url, tessellation, identity = identityFor(url)) =>
   cacheKey(url, tessellation, identity);
-const loadRenderSurfPayloadAtLevel = (url, options = {}) =>
-  loadPayload(url, { identity: identityFor(url), ...options });
-const loadRenderSurfSelectorBundle = (url, options = {}) =>
-  loadSelector(url, { identity: identityFor(url), ...options });
 
-function surfArrayBuffer() {
-  return SUN_GEAR.buffer.slice(
-    SUN_GEAR.byteOffset,
-    SUN_GEAR.byteOffset + SUN_GEAR.byteLength,
-  );
+function withSurfFetch(t) {
+  const originalFetch = globalThis.fetch;
+  let fetches = 0;
+  globalThis.fetch = async () => {
+    fetches += 1;
+    return new Response(SUN_GEAR.arrayBuffer(), { status: 200 });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  return () => fetches;
 }
 
-test("mesh identity includes component, effective tolerances, algorithm and payload", () => {
+test("mesh identity includes component, effective tolerances, producer and payload", () => {
   const defaultKey = surfTessellationCacheKey("u.surf", undefined);
   assert.equal(defaultKey, surfTessellationCacheKey("u.surf", {}));
   assert.match(defaultKey, IDENTITY);
@@ -58,8 +54,8 @@ test("mesh identity includes component, effective tolerances, algorithm and payl
   // 0.0005 and 5e-4 hit the same entry.
   assert.equal(l1, surfTessellationCacheKey("u.surf", { chordTolerance: 0.0005 }));
   assert.equal(
-    surfTessellationCacheKey("/pkg/a.surf", {}, identityFor("same")),
-    surfTessellationCacheKey("/pkg/b.surf", {}, identityFor("same")),
+    surfTessellationCacheKey("/pkg/a.surf", {}),
+    surfTessellationCacheKey("/pkg/b.surf", {}),
     "URL does not fork one immutable D/O identity",
   );
   assert.notEqual(
@@ -69,80 +65,60 @@ test("mesh identity includes component, effective tolerances, algorithm and payl
   );
 });
 
-test("levels tessellate once each, differ in density, and stay consistent", async (t) => {
-  const originalFetch = globalThis.fetch;
-  let fetches = 0;
-  globalThis.fetch = async () => {
-    fetches += 1;
-    return new Response(surfArrayBuffer(), { status: 200 });
-  };
-  t.after(() => {
-    globalThis.fetch = originalFetch;
-  });
-
+test("levels read once each, differ in density, and stay consistent", async (t) => {
+  const fetches = withSurfFetch(t);
+  const store = levelStore();
+  const tessellationCache = createTessellationCache({ provider: store });
+  t.after(() => tessellationCache.dispose());
+  const options = { identity: identityFor(), tessellationCache };
   const url = "https://cad.test/components/sun_gear.surf";
-  const l0 = await loadRenderSurfPayloadAtLevel(url, {});
-  const l2 = await loadRenderSurfPayloadAtLevel(url, {
-    tessellation: lodTessellationForLevel(2),
-  });
+  const l0 = await loadPayload(url, { ...options, tessellation: lodTessellationForLevel(0) });
+  const l1 = await loadPayload(url, options);
   assert.ok(
-    l2.meshData.indices.length > l0.meshData.indices.length,
-    `finer level must add triangles (${l2.meshData.indices.length} vs ${l0.meshData.indices.length})`,
+    l1.meshData.indices.length > l0.meshData.indices.length,
+    `the finer level adds triangles (${l1.meshData.indices.length} vs ${l0.meshData.indices.length})`,
   );
-  // One tessellation feeds render AND picking: the bundle rides the payload.
-  assert.ok(l2.bundle, "selector bundle produced at the finer level");
+  // One mesh feeds render AND picking: the bundle rides the payload.
+  assert.ok(l1.bundle, "selector bundle produced at the finer level");
 
-  // Repeat requests are cache hits at BOTH levels: no new fetches.
-  const before = fetches;
-  const l0Again = await loadRenderSurfPayloadAtLevel(url, {});
-  const l2Again = await loadRenderSurfPayloadAtLevel(url, {
-    tessellation: lodTessellationForLevel(2),
-  });
-  assert.equal(fetches, before, "cached levels must not refetch");
+  // Repeat requests are RAM hits at BOTH levels: no new reads.
+  const before = { reads: store.counts.reads, fetches: fetches() };
+  const l0Again = await loadPayload(url, { ...options, tessellation: lodTessellationForLevel(0) });
+  const l1Again = await loadPayload(url, options);
+  assert.deepEqual({ reads: store.counts.reads, fetches: fetches() }, before, "cached levels read nothing");
   assert.equal(l0Again, l0);
-  assert.equal(l2Again, l2);
+  assert.equal(l1Again, l1);
 });
 
 test("render-only refinement leaves selectors lazy and its cached arrays are not an extra CPU allocation", async (t) => {
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () => new Response(surfArrayBuffer(), { status: 200 });
-  t.after(() => { globalThis.fetch = originalFetch; });
+  withSurfFetch(t);
+  const tessellationCache = createTessellationCache({ provider: levelStore() });
+  t.after(() => tessellationCache.dispose());
   const url = "https://cad.test/lazy-lod/components/sun_gear.surf";
-  const tessellation = lodTessellationForLevel(2);
-  const payload = await loadRenderSurfPayloadAtLevel(url, { tessellation, selectors: false });
+  const tessellation = lodTessellationForLevel(0);
+  const options = { identity: identityFor(), tessellationCache, tessellation };
+  const payload = await loadPayload(url, { ...options, selectors: false });
   assert.equal(payload.bundle, undefined);
   const buffers = Object.values(payload.meshData).filter(ArrayBuffer.isView).map((array) => array.buffer);
   const total = (stats) => Object.entries(stats).reduce((sum, [name, value]) => name === "surfLeash" ? sum : sum + value.typedBytes, 0);
   assert.equal(total(renderAssetCacheStats()) - total(renderAssetCacheStats({ excludeBuffers: buffers })),
     [...new Set(buffers)].reduce((sum, buffer) => sum + buffer.byteLength, 0));
-  const selector = await loadRenderSurfSelectorBundle(url, { tessellation });
-  const combined = await loadRenderSurfPayloadAtLevel(url, { tessellation });
+  const selector = await loadSelector(url, options);
+  const combined = await loadPayload(url, options);
   assert.deepEqual(selector.manifest, combined.bundle.manifest, "later demand uses exactly the displayed level's triangle runs");
   assert.deepEqual(payload.meshData.indices, combined.meshData.indices);
 });
 
-test("explicit coarse tessellation is cheaper on curved and trimmed representative surfaces", async (t) => {
-  const originalFetch = globalThis.fetch;
-  const fixtures = ["cam_follower_roller.surf", "mixed.surf"];
-  const bytesByName = Object.fromEntries(fixtures.map((name) => [
-    name,
-    fs.readFileSync(path.join(HERE, "surf", "fixtures", name)),
-  ]));
-  globalThis.fetch = async (url) => {
-    const name = String(url).split("/").at(-1);
-    const bytes = bytesByName[name];
-    return bytes
-      ? new Response(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength), { status: 200 })
-      : new Response(null, { status: 404 });
-  };
-  t.after(() => { globalThis.fetch = originalFetch; });
-
-  for (const name of fixtures) {
-    const url = `https://cad.test/coarse-sample/${name}`;
-    const coarse = await loadRenderSurfPayloadAtLevel(url, {
-      tessellation: lodTessellationForLevel(0),
-    });
-    const canonical = await loadRenderSurfPayloadAtLevel(url, {});
+test("the coarse tier is cheaper on curved and trimmed representative surfaces", async (t) => {
+  for (const name of ["cam_follower_roller", "mixed"]) {
+    const store = memoryMeshProvider([meshFixture(name, 0).bytes, meshFixture(name, 1).bytes]);
+    const tessellationCache = createTessellationCache({ provider: store });
+    t.after(() => tessellationCache.dispose());
+    const { surfaceInput, surfaceObject } = surfFixture(name);
+    const url = `https://cad.test/coarse-sample/${name}.surf`;
+    const options = { identity: { surfaceInput, surfaceObject }, tessellationCache, selectors: false };
+    const coarse = await loadPayload(url, { ...options, tessellation: lodTessellationForLevel(0) });
+    const canonical = await loadPayload(url, options);
     assert.ok(
       coarse.meshData.indices.length < canonical.meshData.indices.length,
       `${name}: coarse triangles ${coarse.meshData.indices.length / 3} < canonical ${canonical.meshData.indices.length / 3}`,
@@ -158,31 +134,29 @@ test("explicit coarse tessellation is cheaper on curved and trimmed representati
 });
 
 test("every surf entry — any level — rides one bounded leash; consumers own what they keep", async (t) => {
-  const originalFetch = globalThis.fetch;
-  let fetches = 0;
-  globalThis.fetch = async () => {
-    fetches += 1;
-    return new Response(surfArrayBuffer(), { status: 200 });
-  };
-  t.after(() => {
-    globalThis.fetch = originalFetch;
-  });
-
+  withSurfFetch(t);
+  const store = everyKeyMeshProvider();
+  const tessellationCache = createTessellationCache({ provider: store });
+  t.after(() => tessellationCache.dispose());
   const urlFor = (n) => `https://cad.test/lru/component-${n}.surf`;
+  // Distinct components: each URL its own surface input, as distinct parts are.
+  const options = (n, tessellation) => ({
+    identity: { surfaceInput: String(n).padStart(64, "c"), surfaceObject: "a".repeat(64) },
+    tessellationCache, selectors: false, ...(tessellation ? { tessellation } : {}),
+  });
   const level = lodTessellationForLevel(2);
-  const first = await loadRenderSurfPayloadAtLevel(urlFor(0), { tessellation: level });
-  const firstDefault = await loadRenderSurfPayloadAtLevel(urlFor(0), {});
+  const first = await loadPayload(urlFor(0), options(0, level));
+  const firstDefault = await loadPayload(urlFor(0), options(0));
   // Within the leash both stay put.
-  assert.equal(await loadRenderSurfPayloadAtLevel(urlFor(0), { tessellation: level }), first);
-  assert.equal(await loadRenderSurfPayloadAtLevel(urlFor(0), {}), firstDefault);
+  assert.equal(await loadPayload(urlFor(0), options(0, level)), first);
+  assert.equal(await loadPayload(urlFor(0), options(0)), firstDefault);
   // Push more entries than the leash holds (levels and defaults alike).
   for (let n = 1; n <= 30; n += 1) {
-    await loadRenderSurfPayloadAtLevel(urlFor(n), { tessellation: level });
+    await loadPayload(urlFor(n), options(n, level));
   }
-  // The upstream array-buffer cache may absorb the fetch; eviction is proven
-  // by a FRESH payload object (the tessellation re-ran).
-  const firstAgain = await loadRenderSurfPayloadAtLevel(urlFor(0), { tessellation: level });
-  assert.notEqual(firstAgain, first, "evicted level entry re-tessellates");
-  const defaultAgain = await loadRenderSurfPayloadAtLevel(urlFor(0), {});
+  // Eviction is proven by a FRESH payload object (the stored mesh was read again).
+  const firstAgain = await loadPayload(urlFor(0), options(0, level));
+  assert.notEqual(firstAgain, first, "an evicted level entry is read again");
+  const defaultAgain = await loadPayload(urlFor(0), options(0));
   assert.notEqual(defaultAgain, firstDefault, "the default level is evicted like any other: the package owns its meshData");
 });

@@ -168,20 +168,24 @@ does not maintain a second store layout. See
 `packages/cadgen/STORE.md` for objects,
 document indexes, output records and cache-root resolution.
 
-The tessellation routes likewise delegate reads, writes and TESB batch framing
-to `cadgen.store.tess_cache`. `index/mesh/<key>` points to the object containing
-the cached bytes. The shared JavaScript entry codec and key scheme live in
-`@text-to-cad/core/lib/surf/tessellationCache.js`. Cache names are validated before
-access: a request names an entry of the store, never a path.
+The mesh routes likewise delegate reads and TESB batch framing to
+`cadgen.store.tess_cache`. `index/mesh/<key>` points to the object holding the
+mesh cadgen made (OCCT's mesh of a component's exact BREP); a client never
+writes one. The shared JavaScript reader and key scheme live in
+`@text-to-cad/core/lib/surf/tessellationCache.js`. Mesh names are validated
+before access: a request names an entry of the store, never a path. A mesh the
+store lacks is made by naming its tolerances in the component's
+`POST /__cad/surfaces` request (`tessellation`), which meshes it in the same
+build-pool job that derives the surface; its ready row carries the mesh's probe
+row (`mesh`).
 
 The browser host constructs a `CadClient` from `@text-to-cad/core/client` and
 injects it into the viewer renderers. Catalog subscriptions share the client's
 two-second poll and stop when its last subscriber leaves. Each prepared render
-session owns its tessellation provider, work queue and cancellation signal;
+session owns its mesh-store provider, work queue and cancellation signal;
 there is no page-global provider registration. Session disposal releases its
-resources, and the host disposes the client when finished. A cache miss or
-failure falls back to ordinary tessellation; `CADGEN_MESH_CACHE=0` disables
-cache reads and writes.
+resources, and the host disposes the client when finished. A missing mesh is
+asked for through the surface request, never tessellated in the page.
 
 ## HTTP routes
 
@@ -208,9 +212,10 @@ cache reads and writes.
 | `GET /__cad/version` | Whether a newer text-to-cad is out: the update button's `notice`, or null. |
 | `POST /__cad/sketches?name=...` | Save a PNG a copied prompt names by path (a Quick Edit's sketch) as scratch in the system's temporary directory; answers its absolute path. |
 | `POST /__cad/shutdown` | Exit: a newer launch replacing this viewer, or `cadgen viewer stop`. Answers 202, then stops and frees the port. |
-| `GET /__tess_cache/<key>.tess` | Read a tessellation-cache entry. |
-| `POST /__tess_cache/<key>.tess` | Best-effort tessellation-cache write-back. |
-| `POST /__tess_cache/batch` | Read a batch of entries in a TESB container. |
+| `POST /__cad/surfaces` | Resolve components' exact surfaces, deriving them in the build pool; with `tessellation`, their meshes at those tolerances too. |
+| `POST /__tess_cache/probe` | The stored meshes' index records, for keys. |
+| `GET /__tess_cache/<key>.tess` | Read a stored mesh (POST answers 405: cadgen writes every mesh). |
+| `POST /__tess_cache/batch` | Read a batch of stored meshes in a TESB container. |
 
 Every POST must send `x-cadgen-viewer: 1`. The custom header forces a browser
 preflight for cross-origin POSTs, and the server sends no CORS headers. When

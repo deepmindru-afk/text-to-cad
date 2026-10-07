@@ -122,14 +122,14 @@ names are rejected. Use the group table above when updating a saved JSON file.
 For close macro views in normal CAD, a JSON job can set `quality.tessellation` to
 `{"chordTolerance": 0.0005, "angleTolerance": 0.10}`. Chord tolerance is
 relative to each component's bounding diagonal; angle tolerance is radians.
-These positive numeric overrides retessellate the exact STEP surfaces and use
-separate shared-cache entries. They do not change the STEP geometry or a model's
+These positive numeric overrides have cadgen mesh the exact STEP surfaces at
+those tolerances, stored as separate mesh entries. They do not change the STEP geometry or a model's
 declared mesh-export tolerances. Use them only when visible faceting needs finer
 sampling; lower tolerances cost more memory and render time. `chordTolerance`
 must be at least `0.00001` and `angleTolerance` at least `0.005` — finer than
 that exhausts the renderer instead of improving the image, and the job is
 refused.
-Existing mesh documents cannot be retessellated this way. The explicit top-level
+Existing mesh documents cannot be remeshed this way. The explicit top-level
 sampling request works in every display mode. When it is omitted,
 `display.lighting.quality` selects the photographic preview or final LOD.
 

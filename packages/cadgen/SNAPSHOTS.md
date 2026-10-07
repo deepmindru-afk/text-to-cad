@@ -149,7 +149,7 @@ Still view renders report these measured browser durations in milliseconds:
 
 | Field | Measured work |
 | --- | --- |
-| `loadSourceMs` | Source fetch, cached-mesh decoding or tessellation, and source composition |
+| `loadSourceMs` | Source fetch, stored-mesh reads and decoding, and source composition |
 | `preparePoseMs` | Requested animation loading/frame resolution and kinematics runtime preparation |
 | `buildModelMs` | Render context and model/display-record construction |
 | `prepareViewportMs` | Viewport, renderer and scene setup; this is not a draw |
@@ -157,13 +157,15 @@ Still view renders report these measured browser durations in milliseconds:
 | `captureMs` | Entire capture call, including readiness and all output stages below |
 
 Exact-surface packages also report `stageTimings.sourceLoad`. Counts distinguish
-`componentCount`, `cacheBatchCount`, `cacheHitCount` and `cacheMissCount`.
-Measured durations are `probeMs` (metadata), `cacheReadMs` (bounded body fetch
-and integrity validation), `cacheDecodeMs` (component views and metadata),
-`meshBuildMs` (owned render arrays), and `composeMs` (occurrence composition).
-Misses additionally measure `surfaceReadMs` (fetch and parse), `tessellateMs`
-and `cacheWriteMs`. Miss-stage times sum per-component intervals across the
-small concurrent pool, so they can overlap; absent stages are omitted.
+`componentCount`, `cacheBatchCount`, `cacheHitCount` and `cacheMissCount`, and
+`producedCount` when the page asked the host to mesh what its probe found
+missing. Measured durations are `probeMs` (metadata), `produceMs` (the host
+meshing the missing components, in Python, before the page reads them),
+`cacheReadMs` (bounded body fetch and integrity validation), `cacheDecodeMs`
+(component views and metadata), `meshBuildMs` (owned render arrays), and
+`composeMs` (occurrence composition). A static package's own mesh files measure
+`meshReadMs`; those times sum per-component intervals across a small concurrent
+pool, so they can overlap. Absent stages are omitted.
 
 `stageTimings.outputs` contains one measured entry per image, in output order,
 with its `path` and these durations:

@@ -689,12 +689,10 @@ without a DOM dependency in core. Catalog requests retain the ten-second
 timeout and the same error text.
 
 Each prepared CAD document owns a render session with a cancellable view of its
-client's tessellation cache. The client owns the origin-bound provider and bounded
-deferred write queue. Disposing a session aborts its reads and
-rejects late worker writes; already admitted writes remain with the client
-through file switches. Disposing the client clears that queue and its provider
-requests. There is no page-wide mutable cache provider. HTTP storage still uses
-the shared Python cache and its original component-key codec.
+client's mesh-store reader. The client owns the origin-bound provider. Disposing
+a session aborts its reads; disposing the client aborts its provider requests.
+There is no page-wide mutable cache provider. The meshes are cadgen's own, in
+its store under its key scheme: the browser reads them and never writes one.
 
 On mount, immutable mesh and complete robot state are read synchronously from
 the existing bounded decoded caches. Reopening a warm file can therefore show
@@ -1559,7 +1557,7 @@ Photographic lighting and stage code stay lazy; the lightweight grouped settings
 panel is always available. Authored materials are read-only, with no material
 override or undo state.
 
-The host-supplied render session owns its tessellation cache and worker leases.
+The host-supplied render session owns its mesh-store reader and worker leases.
 The file view's display slice is the sole view-settings authority; the camera is the
 mounted viewport's, saved with the view and restored in place of the fit. Surface derivation and preview requests
 use the file's injected service and abort when the consumer leaves. The Features

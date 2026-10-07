@@ -21,11 +21,12 @@ one revolute mate. Every property is there for a test:
 | file | bytes | the request it answers |
 | --- | ---: | --- |
 | `assembly.json` | 3,010 | `GET /__cad/store?file=<tree>/assembly.json&documentHash=…` — the view descriptor. Carries `kind: "assembly-package"`, the `tree`, the `viewId`, the attested `surfaceProducer`, two components, two occurrences and the model box. |
-| `components/552fc5fd1b854ab4.surf` | 13,966 | `GET /__cad/store?tree=…&surfaceInput=…&object=…` for the base. Exact surfaces; the client tessellates them. |
+| `components/552fc5fd1b854ab4.surf` | 13,966 | `GET /__cad/store?tree=…&surfaceInput=…&object=…` for the base. Exact surfaces and topology: what picking and measuring read. |
 | `components/df492f79c6123df5.surf` | 10,478 | the same, for the arm. |
+| `components/<cid>.l<level>.tess` | 2,872–18,380 | the store's meshes, one per component and LOD level 0–3: what the harness's mesh store serves (`/__tess_cache/` probe, batch and single reads), and what a `POST /__cad/surfaces` naming a tessellation answers with. |
 | `hinge_block.step.json` | 2,298 | **no request at all.** The harness puts it inline on the catalog entry as `sourceSidecar`, which is what the real scanner does, and the renderer reads the kinematics and the routine's keyframes straight from there. |
 
-Total 29,752 bytes. No Git attribute applies here (`git check-attr -a` on these
+Total 88,616 bytes with the meshes. No Git attribute applies here (`git check-attr -a` on these
 paths prints nothing), and the repository carries no LFS. Keep it that way — an
 LFS pointer would be rejected by name at `renderAssetClient.js`'s SURF reader.
 
@@ -66,6 +67,16 @@ is the store object named by `surfaceObject` in the **materialized** view
 (`materialize_view_surfaces`), read through `cadgen.store.objects.object_path`.
 The served descriptor is the unmaterialized one — that is deliberate, and is why
 the harness must implement `POST /__cad/surfaces`.
+
+The meshes are cadgen's own: `source/make_meshes.py` rebuilds the two parts,
+meshes them with cadgen's producer at each LOD level, and writes them in the
+committed `.surf`s' ordinals (a newer build orders the base's edges differently;
+the script matches them by centre and length). Run it from the repository root
+with the repo's Python whenever the TESS format or the mesher moves:
+
+```sh
+.venv/bin/python packages/ui/src/renderers/step/__fixtures__/step/source/make_meshes.py
+```
 
 Regenerate when the SURF format, the view schema or the sidecar schema moves.
 When the STEP bytes or the view change, the component ids, `tree`, `viewId` and

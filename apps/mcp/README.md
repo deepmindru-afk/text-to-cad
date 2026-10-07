@@ -157,8 +157,8 @@ reference host `basic-host` does.
   client asks for 32 MiB), every GET asks for its first 4 MiB as a byte range,
   and a longer body comes back a range at a time, which the tunnel puts together
   for the client. A part of a body that changed meanwhile (its `etag`) fails the
-  read, and the cache verifies a tessellation's digest of the whole as of any
-  body. The server refuses any reply still longer (502), and an agent's
+  read, and the mesh store's reader verifies a mesh's digest of the whole as of
+  any body. The server refuses any reply still longer (502), and an agent's
   screenshot longer than that, rather than send it. 4 MiB loads as fast as 8 MiB
   did.
 - **One file.** The build inlines scripts, styles, workers (as blobs) and the

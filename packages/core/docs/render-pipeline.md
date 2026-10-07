@@ -444,14 +444,14 @@ loading the photographic studio.
 `resolveDisplayMaterialSettings()` applies the shared Original, Single color
 and Color by part policy without app state.
 
-**Scene geometry is the tessellator's INDEXED output.** A surf component's
-`meshData` shares the tessellation's vertex, normal and index buffers by
-reference (a decoded `.tess` cache entry is copied out of its one entry
-buffer) and is never expanded per triangle corner.
+**Scene geometry is the stored mesh's INDEXED arrays.** A surf component's
+`meshData` takes the vertex, normal and index buffers of the mesh cadgen made
+(copied out of the decoded `.tess` entry's one buffer) and is never expanded
+per triangle corner.
 
 **CAD edges are not a surface shader.** `surfMeshData.js` emits indexed line
 segments (`cadEdgePositions` + `cadEdgeIndices` + `cadEdgeClassRanges`, from
-the same tessellation's boundary polylines, ~1.5 bytes per surface triangle)
+the same mesh's edge polylines, ~1.5 bytes per surface triangle)
 and `cadScene.js` draws them as ONE instanced screen-space line draw per
 component (`cadEdgeInstances.js`): the instances are every (segment,
 occurrence) pair, decoded in the vertex shader from a per-component segment

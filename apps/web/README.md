@@ -250,7 +250,7 @@ or Theme editor. These controls live in `@text-to-cad/ui`; see the UI package's
 Render and LOD playbooks.
 
 Large assemblies load progressively and refine visible components within memory
-budgets. Warm tessellations can render before exact surface derivation. The
+budgets. Stored meshes render before exact surface derivation. The
 viewport carries opening/update status, centred at its top (a progress icon on
 mobile); initial loading may also use the viewport overlay, and an error is a card over the viewport whose Details keep the complete
 compiler output, whose Retry reloads only that file and whose Report Issue opens a

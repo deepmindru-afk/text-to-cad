@@ -26,13 +26,17 @@ display concern only.
 
 ## 1. Where a model starts
 
-Assemblies with at least 64 unique components can start at a coarser display
-tessellation when standard meshes are not cached. Cached standard meshes are
-preferred immediately, subject to their probed decode size and admission. The
-tiers are probed a chunk of components at a time and the cached bodies read a
-batch at a time (`createInitialDisplayPlans`, `packageBatchReads.js`), the first
-of each the size of the first publish, so the first geometry waits on no more
-than it draws.
+Every mesh the viewer draws is cadgen's (OCCT's mesh of the exact BREP, stored
+by cadgen); the browser never tessellates. Assemblies with at least 64 unique
+components start at the coarser tier when standard meshes are not stored.
+Stored standard meshes are preferred immediately, subject to their probed decode
+size and admission. The tiers are probed a chunk of components at a time and the
+stored bodies read a batch at a time (`createInitialDisplayPlans`,
+`packageBatchReads.js`), the first of each the size of the first publish, so the
+first geometry waits on no more than it draws. A component with neither tier
+stored names its opening tier in the `/__cad/surfaces` request that derives its
+surface: cadgen meshes it in the same job, and the row carries the mesh's probe
+row, which the component then reads like a stored one.
 Smaller assemblies start at the standard level, except that an individually
 oversized component may start coarse. A component above the concurrent decode
 cap runs alone only when the shared Viewer memory envelope can reserve its
@@ -87,7 +91,7 @@ refinement until the camera or viewport changes, preventing upgrade/downgrade
 loops. Mesh-bound and clip-plane updates do not reset that cap. Pressure
 coarsening remains singleton.
 
-Admission can reclaim idle tessellation workers and retry while preserving
+Admission can reclaim idle decode workers and retry while preserving
 active consumers. Its ledger samples each live worker's own retained estimate
 before admission, so a large component does not inflate every worker's charge.
 Refinement reserves both replacement arrays and worker scratch space, and

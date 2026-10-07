@@ -1,17 +1,19 @@
 // The CI gate for the hero showcase assets: the committed render package and
 // sidecar under public/hero/ must still satisfy the contracts the hero page
-// consumes through @text-to-cad/core — the .surf container format the client
-// tessellates, a kinematics section that compiles into a step-module
-// definition, and embedded animation source. A cadgen schema bump that
-// regenerates these formats fails here instead of silently breaking the
-// production render. Refresh with scripts/sync-hero-step-assets.mjs.
+// consumes through @text-to-cad/core — each component's mesh, as cadgen made
+// it, readable as that component's mesh at the tolerances the hero draws; a
+// kinematics section that compiles into a step-module definition; and embedded
+// animation source. A cadgen format bump that regenerates these fails here
+// instead of silently breaking the production render. Refresh with
+// scripts/sync-hero-step-assets.mjs.
 
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { SURF_MAGIC, SURF_VERSION } from "@text-to-cad/core/lib/surf/container.js";
+import { packageSourceFromBaseUrl } from "@text-to-cad/core/common/source.js";
+import { decodeComponentTessellation } from "@text-to-cad/core/lib/surf/tessellationCache.js";
 import { stepModuleFromKinematics } from "@text-to-cad/core/common/kinematicsModule.js";
 import { loadSourceAnimation } from "@text-to-cad/core/common/animationRuntime.js";
 import { validateSourceSidecar } from "@text-to-cad/core/common/sourceSidecar.js";
@@ -26,16 +28,16 @@ const descriptor = JSON.parse(
 const components = Object.entries(descriptor.components || {});
 assert.ok(components.length > 0, "Hero render package descriptor lists no components");
 
+// The mesh URLs the hero reads, resolved the way the page resolves them.
+const { package: heroPackage } = packageSourceFromBaseUrl("/hero/planetary", descriptor);
 for (const [cid, entry] of components) {
-  const surfPath = path.join(heroPackageDir, String(entry?.surf || ""));
-  assert.ok(entry?.surf && fs.existsSync(surfPath), `Hero component ${cid} is missing its .surf`);
-  const header = fs.readFileSync(surfPath).subarray(0, 8);
-  assert.equal(header.readUInt32LE(0), SURF_MAGIC, `${surfPath} is not a SURF container`);
-  assert.equal(
-    header.readUInt32LE(4),
-    SURF_VERSION,
-    `${surfPath} is SURF v${header.readUInt32LE(4)}; @text-to-cad/core expects v${SURF_VERSION}`,
-  );
+  const meshPath = path.join(docsRoot, "public", heroPackage.meshUrls[cid]);
+  assert.ok(fs.existsSync(meshPath), `Hero component ${cid} is missing its mesh (${meshPath})`);
+  const decoded = decodeComponentTessellation(new Uint8Array(fs.readFileSync(meshPath)), {
+    surfaceInput: entry.surfaceInput, surfaceObject: entry.surfaceObject, tessellation: {},
+  });
+  assert.ok(decoded, `${meshPath} is not component ${cid}'s mesh at the default tolerances in the current TESS format`);
+  assert.ok(decoded.component.indices.length > 0, `${meshPath} draws no triangles`);
 }
 
 const rawSidecar = JSON.parse(fs.readFileSync(heroSidecarPath, "utf8"));

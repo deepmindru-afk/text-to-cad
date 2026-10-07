@@ -18,7 +18,7 @@ The package migration is a pure refactor: the site's UI, UX, functionality, cont
 CAD showcases remain unchanged. Normal development, checks and deployment use
 existing static assets and do not start Python. Asset regeneration is still an
 explicit operation. The hero composes an explicit static HTTP resource provider
-from core for descriptors, surfaces and sidecars. It needs no FileViewer host,
+from core for descriptors, meshes and sidecars. It needs no FileViewer host,
 Electron services or Python backend; the resource-provider migration keeps its
 existing static asset URLs and rendering behavior.
 
@@ -43,20 +43,23 @@ is redeployed from its tag). The Vercel project's Root Directory setting (in
 Vercel, not this repo) must point at `apps/docs`.
 
 Hero STEP assets under `public/hero/` are a view of the tree behind the
-planetary gear STEP (`assembly.json` + each component's `.surf`) plus its
+planetary gear STEP (`assembly.json` + each component's mesh, `<cid>.tess`, as
+cadgen made it at the default tolerances: the one level the hero draws) plus its
 schema-10 sidecar with its animation keyframes, committed as PLAIN files (never LFS — Vercel serves them statically
-with no backend). Refresh them after rebuilding the model:
+with no backend). The hero pins the STEP's document hash (`HERO_DOCUMENT_HASH`
+in `src/components/hero-step-render.tsx`); a rebuild that changes the STEP's
+bytes changes it. Refresh them after rebuilding the model:
 
 ```
 python models/assemblies/src/planetary_gear_assembly/planetary_gear_assembly.py
 node apps/docs/scripts/sync-hero-step-assets.mjs   # same CADGEN_CACHE_DIR as the build
 ```
 
-The sync script asks cadgen for the tree by the STEP's bytes and exports a
-view of it, so it never restates a store path. The check script
-(`scripts/check-hero-step-assets.mjs`, part of `npm run check`) pins the surf
-container and sidecar contracts against @text-to-cad/core so a schema bump cannot
-silently break the hero render.
+The sync script asks cadgen for the tree by the STEP's bytes, exports a view of
+it and has cadgen mesh every component, so it never restates a store path. The
+check script (`scripts/check-hero-step-assets.mjs`, part of `npm run check`) pins
+the mesh format and sidecar contracts against @text-to-cad/core so a format or
+schema bump cannot silently break the hero render.
 
 ## The shape of the app
 

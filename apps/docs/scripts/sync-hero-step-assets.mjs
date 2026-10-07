@@ -1,13 +1,15 @@
 // Refresh the hero showcase assets from the repo model. The hero renders the
 // planetary gear STEP the same way every @text-to-cad/core client does — from the
-// TREE behind the document (assembly.json + exact-surface components) plus
-// its schema-v10 SIDECAR (<name>.step.json: kinematics + animation keyframes) — served
-// as plain static files so production (Vercel) needs no backend and no Git LFS.
+// TREE behind the document (assembly.json) and the mesh cadgen made of each
+// component, plus its schema-v10 SIDECAR (<name>.step.json: kinematics +
+// animation keyframes) — served as plain static files so production (Vercel)
+// needs no backend and no Git LFS.
 //
 // The tree lives in cadgen's store, keyed by the STEP file's bytes, and the
 // store holds no directories: this script asks cadgen to export a view of the
-// tree (assembly.json + components/<cid>.surf) and copies what the browser
-// fetches. Run it after rebuilding the model:
+// tree (assembly.json + components/) and to mesh every component at the
+// default tolerances (components/<cid>.tess, the one level the hero draws), and
+// copies what the browser fetches. Run it after rebuilding the model:
 //
 //   python models/assemblies/src/planetary_gear_assembly/planetary_gear_assembly.py
 //   node apps/docs/scripts/sync-hero-step-assets.mjs
@@ -47,9 +49,16 @@ const viewDir = execFileSync(
   python,
   [
     "-c",
-    "import sys; from pathlib import Path; " +
+    "import json, sys; from pathlib import Path; " +
       "from cadgen.catalog import result_tree_for; from cadgen.store.view import export_view; " +
-      "tree = result_tree_for(Path(sys.argv[1])); print(export_view(tree) if tree else '')",
+      "from cadgen.store import meshes, surfaces; " +
+      "tree = result_tree_for(Path(sys.argv[1])); view = export_view(tree) if tree else None; " +
+      "descriptor = json.loads((view / 'assembly.json').read_text()) if view else {}; " +
+      "surfaces.derive(tree, producer=descriptor['surfaceProducer'], tessellations=[dict(" +
+      "chordTolerance=meshes.DEFAULT_CHORD, angleTolerance=meshes.DEFAULT_ANGLE)]) if view else None; " +
+      "[(view / 'components' / (cid + '.tess')).write_bytes(meshes.read(meshes.tessellation_key(entry['surfaceInput']))) " +
+      "for cid, entry in descriptor.get('components', {}).items()]; " +
+      "print(view or '')",
     modelStep,
   ],
   { encoding: "utf8" },
@@ -63,8 +72,9 @@ try {
   const descriptor = JSON.parse(fs.readFileSync(path.join(viewDir, "assembly.json"), "utf8"));
 
   // Ship only what the browser fetches: the descriptor and each component's
-  // .surf. The .brep siblings exist for exact-geometry exports, which the hero
-  // never does.
+  // mesh, which `packageSourceFromBaseUrl` finds beside the surf path the
+  // descriptor names. The .surf (selectors) and .brep (exact geometry) exist
+  // for picking and exports, which the hero never does.
   fs.rmSync(heroTreeDir, { recursive: true, force: true });
   fs.mkdirSync(path.join(heroTreeDir, "components"), { recursive: true });
   fs.copyFileSync(path.join(viewDir, "assembly.json"), path.join(heroTreeDir, "assembly.json"));
@@ -75,7 +85,8 @@ try {
     if (!surf) {
       throw new Error(`Component ${cid} declares no surf path in ${viewDir}/assembly.json`);
     }
-    fs.copyFileSync(path.join(viewDir, surf), path.join(heroTreeDir, surf));
+    const mesh = `${surf.replace(/\.surf$/, "")}.tess`;
+    fs.copyFileSync(path.join(viewDir, mesh), path.join(heroTreeDir, mesh));
     copied += 1;
   }
 
